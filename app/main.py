@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -27,6 +28,11 @@ app = FastAPI(title="Community Compost API", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(web_router)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def web_root():
+    return RedirectResponse("/web", status_code=307)
 
 
 @app.get("/health")
@@ -161,6 +167,39 @@ def upload_photo(session_id: str, file: UploadFile = File(...), db: Session = De
     db.add(DeviceCommand(id=payload["commandId"], session_id=session.id, action="CLOSE", nonce=payload["nonce"], issued_at=payload["issuedAt"], expires_at=payload["expiresAt"]))
     db.commit()
     return {"review_id": review.id, "command": payload}
+
+
+@app.get("/sessions/active")
+def active_session(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    session = db.scalar(
+        select(AccessSession)
+        .where(
+            AccessSession.user_id == user.id,
+            AccessSession.status.not_in([SessionStatus.CLOSED, SessionStatus.FAILED]),
+        )
+        .order_by(AccessSession.created_at.desc())
+    )
+    if not session:
+        return {"session_id": None, "composter_id": None, "status": None, "close_pending": False}
+    return {
+        "session_id": session.id,
+        "composter_id": session.composter_id,
+        "status": session.status,
+        "close_pending": session.status == SessionStatus.CLOSE_REQUESTED,
+    }
+
+
+@app.post("/sessions/{session_id}/retry-close")
+def retry_close(session_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    session = db.get(AccessSession, session_id)
+    if not session or session.user_id != user.id:
+        raise HTTPException(404, "Session not found")
+    if session.status != SessionStatus.CLOSE_REQUESTED:
+        raise HTTPException(409, "Session is not waiting for close")
+    payload = signed_command(session.composter, session.id, "CLOSE")
+    db.add(DeviceCommand(id=payload["commandId"], session_id=session.id, action="CLOSE", nonce=payload["nonce"], issued_at=payload["issuedAt"], expires_at=payload["expiresAt"]))
+    db.commit()
+    return {"session_id": session.id, "command": payload}
 
 
 @app.get("/moderation/reviews")

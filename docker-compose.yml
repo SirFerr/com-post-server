@@ -34,7 +34,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://compost:compost-local@postgres:5432/compost
       JWT_SECRET: local-compose-secret-change-in-production
-      S3_PUBLIC_ENDPOINT: http://10.0.2.2:9000
+      S3_PUBLIC_ENDPOINT: http://192.168.1.212:9000
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}

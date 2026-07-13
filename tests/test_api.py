@@ -9,6 +9,7 @@ def auth(value):
 
 def test_health_and_login(client):
     assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/", follow_redirects=False).headers["location"] == "/web"
     assert client.post("/auth/login", json={"email": "user@example.com", "password": "bad-password"}).status_code == 401
     assert token(client)
 
@@ -35,6 +36,21 @@ def test_access_rejects_bad_location_and_replay(client):
     ack = {"command_id": body["command"]["commandId"], "status": "SUCCESS"}
     assert client.post(f"/sessions/{body['session_id']}/ack", json=ack, headers=headers).status_code == 200
     assert client.post(f"/sessions/{body['session_id']}/ack", json=ack, headers=headers).status_code == 409
+
+
+def test_active_session_can_retry_close(client):
+    with SessionLocal() as db:
+        session = AccessSession(id="retry-close-session", user_id="user-1", composter_id="composter-1", status=SessionStatus.CLOSE_REQUESTED)
+        db.add(session)
+        db.commit()
+    headers = auth(token(client))
+    active = client.get("/sessions/active", headers=headers)
+    assert active.status_code == 200
+    assert active.json()["session_id"] == "retry-close-session"
+    assert active.json()["close_pending"] is True
+    retry = client.post("/sessions/retry-close-session/retry-close", headers=headers)
+    assert retry.status_code == 200
+    assert retry.json()["command"]["action"] == "CLOSE"
 
 
 def test_third_violation_blocks_user(client):

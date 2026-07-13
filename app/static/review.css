@@ -1,0 +1,13 @@
+.review-photo{padding:0;background:transparent;display:block;width:130px;height:130px;overflow:hidden;border-radius:13px}
+.review-photo img{width:100%;height:100%;object-fit:cover;transition:transform .2s}
+.review-photo:hover img{transform:scale(1.04)}
+.review-dialog{width:min(1180px,calc(100vw - 40px));height:min(820px,calc(100vh - 40px));padding:0;border:1px solid var(--line);border-radius:24px;background:#0d110f;color:var(--text);overflow:hidden}
+.review-dialog::backdrop{background:#000c;backdrop-filter:blur(5px)}
+.review-dialog-layout{height:100%;display:grid;grid-template-columns:minmax(0,1.7fr) minmax(330px,.8fr)}
+.review-dialog-photo{position:relative;min-height:0;background:#050605;display:grid;place-items:center}
+.review-dialog-photo img{width:100%;height:100%;object-fit:contain}
+.dialog-close{position:absolute;top:16px;right:16px;width:46px;height:46px;padding:0;border-radius:50%;font-size:28px;background:#1c221fdd;color:white}
+.review-dialog-panel{padding:34px;overflow:auto;display:flex;flex-direction:column;justify-content:center}
+.review-dialog-panel h2{margin:12px 0 4px}.review-dialog-panel form{display:grid;gap:12px;margin-top:24px}.review-dialog-panel input{max-width:none;margin:0;padding:13px}
+.review-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.review-actions button{padding:14px}
+@media(max-width:800px){.review-dialog{width:100vw;height:100vh;max-width:none;max-height:none;border:0;border-radius:0}.review-dialog-layout{grid-template-columns:1fr;grid-template-rows:minmax(0,58vh) auto}.review-dialog-panel{padding:22px;justify-content:flex-start}.review-photo{width:100%;height:220px}.review-photo img{width:100%;height:100%}}

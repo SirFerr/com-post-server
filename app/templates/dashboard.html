@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Com-post · Панель</title><link rel="stylesheet" href="/static/admin.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Com-post · Панель</title><link rel="stylesheet" href="/static/admin.css"><link rel="stylesheet" href="/static/review.css"></head>
 <body>
 <aside class="sidebar">
   <div class="brand"><span class="brand-mark">C</span><strong>Com-post</strong></div>
@@ -21,7 +21,18 @@
     </tbody></table></div>
   </section>
   {% if actor.role.value in ['ADMIN','MODERATOR'] %}<section id="moderation"><div class="section-title"><div><p class="eyebrow">ОЧЕРЕДЬ</p><h2>Модерация</h2></div><span class="counter">{{ reviews|length }}</span></div>
-    <div class="review-grid">{% for row in reviews %}<article class="review"><img src="{{ row.photo_url }}" alt="Фото загрузки"><div><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><h3>{{ row.review.ml_status }}</h3><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><form method="post" action="/web/reviews/{{ row.review.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="comment" placeholder="Комментарий"><input name="violation_reason" value="INVALID_COMPOST" placeholder="Причина нарушения"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></form></div></article>{% else %}<div class="empty">Очередь пуста — всё проверено.</div>{% endfor %}</div>
+    <div class="review-grid">{% for row in reviews %}
+      <article class="review">
+        <button type="button" class="review-photo" onclick="document.getElementById('review-{{ row.review.id }}').showModal()"><img src="{{ row.photo_url }}" alt="Фото загрузки"></button>
+        <div><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><h3>{{ row.review.ml_status }}</h3><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><button type="button" onclick="document.getElementById('review-{{ row.review.id }}').showModal()">Открыть проверку</button></div>
+      </article>
+      <dialog class="review-dialog" id="review-{{ row.review.id }}">
+        <div class="review-dialog-layout">
+          <div class="review-dialog-photo"><img src="{{ row.photo_url }}" alt="Фото загрузки"><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></div>
+          <div class="review-dialog-panel"><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><h2>{{ row.review.ml_status }}</h2><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><form method="post" action="/web/reviews/{{ row.review.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="comment" placeholder="Комментарий"><input name="violation_reason" value="INVALID_COMPOST" placeholder="Причина нарушения"><div class="review-actions"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></div></form></div>
+        </div>
+      </dialog>
+    {% else %}<div class="empty">Очередь пуста — всё проверено.</div>{% endfor %}</div>
   </section>{% endif %}
   {% if actor.role.value == 'ADMIN' %}<section id="users"><p class="eyebrow">ДОСТУП</p><h2>Пользователи и сотрудники</h2><div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Роль</th><th>Блокировка</th><th></th></tr></thead><tbody>{% for u in users %}<tr><form method="post" action="/web/users/{{ u.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><td><strong>{{ u.full_name or 'Без имени' }}</strong><small>{{ u.email }}</small></td><td><select name="role">{% for role in roles %}<option {% if u.role == role %}selected{% endif %}>{{ role.value }}</option>{% endfor %}</select></td><td><label><input name="blocked" type="checkbox" value="true" {% if u.is_blocked %}checked{% endif %}> заблокирован</label><input name="ban_reason" value="{{ u.ban_reason or '' }}" placeholder="Причина"></td><td><button>Сохранить</button></td></form></tr>{% endfor %}</tbody></table></div></section>
   <section id="audit"><p class="eyebrow">БЕЗОПАСНОСТЬ</p><h2>Последние действия</h2><div class="timeline">{% for row in audit_rows %}<div><span></span><strong>{{ row.action }}</strong><small>{{ row.entity }} · {{ row.entity_id }} · {{ row.created_at }}</small></div>{% else %}<div class="empty">Действий пока нет.</div>{% endfor %}</div></section>{% endif %}

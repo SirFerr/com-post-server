@@ -1,15 +1,16 @@
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .admin import router as admin_router
 from .database import Base, engine, get_db
 from .models import AccessSession, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, User, UserScore, Violation
-from .schemas import AccessRequest, CommandAck, LoginRequest, ModerateRequest
-from .security import create_token, current_user, require_roles, signed_command, verify_password
+from .schemas import AccessRequest, CommandAck, LoginRequest, ModerateRequest, RegisterRequest
+from .security import create_token, current_user, hash_password, require_roles, signed_command, verify_password
 from .services import apply_violation, audit, distance_m, photo_url, request_ml_review, reward_review, store_photo
 
 
@@ -33,6 +34,19 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == data.email))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
+    return {"access_token": create_token(user), "token_type": "bearer", "role": user.role}
+
+
+@app.post("/auth/register", status_code=201)
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    email = data.email.lower()
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(409, "Email is already registered")
+    user = User(email=email, password_hash=hash_password(data.password), full_name=data.full_name.strip(), role=Role.USER)
+    db.add(user)
+    db.flush()
+    audit(db, user, "user", user.id, "USER_REGISTERED")
+    db.commit()
     return {"access_token": create_token(user), "token_type": "bearer", "role": user.role}
 
 
@@ -78,9 +92,13 @@ def acknowledge(session_id: str, data: CommandAck, db: Session = Depends(get_db)
         raise HTTPException(404, "Session or command not found")
     if command.acknowledged:
         raise HTTPException(409, "Command already acknowledged")
+    if data.status not in {"SUCCESS", "LOCK_FAILURE", "INVALID_FORMAT", "WRONG_DEVICE", "UNSUPPORTED_ACTION", "EXPIRED", "REPLAY_DETECTED", "INVALID_SIGNATURE", "TIMEOUT", "CONNECTION_FAILED"}:
+        raise HTTPException(422, "Unknown device status")
     command.acknowledged = True
     success = data.status == "SUCCESS"
     session.status = SessionStatus.OPENED if command.action == "OPEN" and success else SessionStatus.CLOSED if success else SessionStatus.FAILED
+    if session.status == SessionStatus.CLOSED:
+        session.closed_at = datetime.now(timezone.utc)
     db.commit()
     return {"status": session.status}
 
@@ -105,7 +123,12 @@ def upload_photo(session_id: str, file: UploadFile = File(...), db: Session = De
 
 @app.get("/moderation/reviews")
 def pending_reviews(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.MODERATOR, Role.ADMIN))):
-    return [{"id": r.id, "session_id": r.session_id, "photo_url": photo_url(r.photo_key), "status": r.status, "ml_status": r.ml_status, "confidence": r.ml_confidence, "ml_violations": json.loads(r.ml_violations)} for r in db.scalars(select(Review).where(Review.status == ReviewStatus.PENDING)).all()]
+    reviews = db.scalars(select(Review).where(Review.status == ReviewStatus.PENDING).order_by(Review.created_at)).all()
+    result = []
+    for review in reviews:
+        session = db.get(AccessSession, review.session_id)
+        result.append({"id": review.id, "session_id": review.session_id, "photo_url": photo_url(review.photo_key), "status": review.status, "ml_status": review.ml_status, "confidence": review.ml_confidence, "ml_violations": json.loads(review.ml_violations), "created_at": review.created_at, "user_name": session.user.full_name or session.user.email, "user_email": session.user.email, "composter_name": session.composter.name})
+    return result
 
 
 @app.post("/moderation/reviews/{review_id}")
@@ -149,3 +172,19 @@ def cancel_violation(violation_id: str, db: Session = Depends(get_db), moderator
 def score(db: Session = Depends(get_db), user: User = Depends(current_user)):
     value = db.get(UserScore, user.id)
     return {"points": value.points if value else 0, "total_uploads": value.total_uploads if value else 0, "valid_uploads": value.valid_uploads if value else 0}
+
+
+@app.get("/profile")
+def profile(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    active_violations = db.scalar(select(func.count(Violation.id)).where(Violation.user_id == user.id, Violation.is_active.is_(True))) or 0
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "active_violations": active_violations, "created_at": user.created_at}
+
+
+@app.get("/profile/deposits")
+def deposit_history(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    sessions = db.scalars(select(AccessSession).where(AccessSession.user_id == user.id).order_by(AccessSession.created_at.desc()).limit(100)).all()
+    result = []
+    for session in sessions:
+        review = db.scalar(select(Review).where(Review.session_id == session.id))
+        result.append({"id": session.id, "composter_name": session.composter.name, "status": session.status, "created_at": session.created_at, "closed_at": session.closed_at, "review_status": review.status if review else None, "ml_status": review.ml_status if review else None, "moderator_comment": review.comment if review else None})
+    return result

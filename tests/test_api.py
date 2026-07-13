@@ -1,5 +1,5 @@
 from app.database import SessionLocal
-from app.models import AccessSession, Review, User
+from app.models import AccessSession, DeviceCommand, Review, SessionStatus, User
 from tests.conftest import token
 
 
@@ -92,6 +92,47 @@ def test_staff_debug_command_is_signed_and_can_be_acknowledged(client):
     assert body["command"]["signature"]
     ack = client.post(f"/sessions/{body['session_id']}/ack", json={"command_id": body["command"]["commandId"], "status": "SUCCESS"}, headers=headers)
     assert ack.status_code == 200
+    with SessionLocal() as db:
+        assert db.get(AccessSession, body["session_id"]).status == SessionStatus.CLOSED
+
+
+def test_unfinished_staff_diagnostic_does_not_block_regular_user(client):
+    engineer = auth(token(client, "engineer@example.com"))
+    diagnostic = client.post("/admin/composters/composter-1/debug-command", json={"action": "OPEN"}, headers=engineer)
+    assert diagnostic.status_code == 200
+
+    user = auth(token(client))
+    granted = client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user)
+    assert granted.status_code == 200
+    body = granted.json()
+    assert client.post(
+        f"/sessions/{body['session_id']}/ack",
+        json={"command_id": body["command"]["commandId"], "status": "CONNECTION_FAILED"},
+        headers=user,
+    ).status_code == 200
+
+
+def test_expired_unacknowledged_user_command_is_cleaned_before_access(client):
+    with SessionLocal() as db:
+        stale = AccessSession(id="stale-session", user_id="user-1", composter_id="composter-1")
+        db.add(stale)
+        db.flush()
+        db.add(DeviceCommand(
+            id="stale-command",
+            session_id=stale.id,
+            action="OPEN",
+            nonce="stale-nonce",
+            issued_at=1,
+            expires_at=2,
+            acknowledged=False,
+        ))
+        db.commit()
+
+    user = auth(token(client))
+    granted = client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user)
+    assert granted.status_code == 200
+    with SessionLocal() as db:
+        assert db.get(AccessSession, "stale-session").status == SessionStatus.FAILED
 
 
 def test_staff_web_login_and_role_sections(client):

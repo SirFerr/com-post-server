@@ -77,7 +77,35 @@ def request_access(composter_id: str, data: AccessRequest, db: Session = Depends
         raise HTTPException(409, "Composter unavailable")
     if distance_m(data.latitude, data.longitude, composter.latitude, composter.longitude) > composter.radius_m:
         raise HTTPException(403, "User is outside the allowed radius")
-    active = db.scalar(select(AccessSession).where(AccessSession.composter_id == composter.id, AccessSession.status.not_in([SessionStatus.CLOSED, SessionStatus.FAILED])))
+    now = datetime.now(timezone.utc)
+    expired_sessions = db.scalars(
+        select(AccessSession)
+        .join(User, AccessSession.user_id == User.id)
+        .join(DeviceCommand, DeviceCommand.session_id == AccessSession.id)
+        .where(
+            AccessSession.composter_id == composter.id,
+            User.role == Role.USER,
+            AccessSession.status.not_in([SessionStatus.CLOSED, SessionStatus.FAILED]),
+            DeviceCommand.acknowledged.is_(False),
+            DeviceCommand.expires_at < int(now.timestamp()),
+        )
+    ).all()
+    for expired in expired_sessions:
+        expired.status = SessionStatus.FAILED
+        expired.closed_at = now
+    if expired_sessions:
+        db.flush()
+    # Staff diagnostics use access sessions for signed commands too, but they must
+    # never reserve a public composter for regular users.
+    active = db.scalar(
+        select(AccessSession)
+        .join(User, AccessSession.user_id == User.id)
+        .where(
+            AccessSession.composter_id == composter.id,
+            User.role == Role.USER,
+            AccessSession.status.not_in([SessionStatus.CLOSED, SessionStatus.FAILED]),
+        )
+    )
     if active:
         raise HTTPException(409, "Another operation is active")
     session = AccessSession(user_id=user.id, composter_id=composter.id)
@@ -101,11 +129,17 @@ def acknowledge(session_id: str, data: CommandAck, db: Session = Depends(get_db)
         raise HTTPException(422, "Unknown device status")
     command.acknowledged = True
     success = data.status == "SUCCESS"
-    session.status = SessionStatus.OPENED if command.action == "OPEN" and success else SessionStatus.CLOSED if success else SessionStatus.FAILED
+    diagnostic = session.user.role != Role.USER
+    session.status = (
+        SessionStatus.CLOSED if diagnostic and success
+        else SessionStatus.OPENED if command.action == "OPEN" and success
+        else SessionStatus.CLOSED if success
+        else SessionStatus.FAILED
+    )
     if success:
         session.composter.lock_state = "OPEN" if command.action == "OPEN" else "CLOSED"
         session.composter.last_seen_at = datetime.now(timezone.utc)
-    if session.status == SessionStatus.CLOSED:
+    if session.status in {SessionStatus.CLOSED, SessionStatus.FAILED}:
         session.closed_at = datetime.now(timezone.utc)
     db.commit()
     return {"status": session.status}

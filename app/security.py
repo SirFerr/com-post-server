@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,7 @@ def create_token(user: User) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
-def current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def user_from_token(token: str, db: Session) -> User:
     try:
         user_id = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])["sub"]
     except (jwt.PyJWTError, KeyError):
@@ -47,6 +47,20 @@ def current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(401, "User not found")
+    return user
+
+
+def current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    return user_from_token(token, db)
+
+
+def web_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    token = request.cookies.get("compost_session")
+    if not token:
+        raise HTTPException(401, "Authentication required")
+    user = user_from_token(token, db)
+    if user.role == Role.USER:
+        raise HTTPException(403, "Staff account required")
     return user
 
 
@@ -73,4 +87,3 @@ def signed_command(composter: Composter, session_id: str, action: str) -> dict:
     canonical = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
     data["signature"] = hmac.new(composter.secret.encode(), canonical, hashlib.sha256).hexdigest()
     return data
-

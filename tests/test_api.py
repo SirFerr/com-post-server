@@ -81,3 +81,37 @@ def test_admin_dashboard_and_user_blocking(client):
     assert updated.json()["is_blocked"] is True
     with SessionLocal() as db:
         assert db.get(User, "user-1").ban_reason == "manual test"
+
+
+def test_staff_debug_command_is_signed_and_can_be_acknowledged(client):
+    headers = auth(token(client, "engineer@example.com"))
+    response = client.post("/admin/composters/composter-1/debug-command", json={"action": "OPEN"}, headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["command"]["action"] == "OPEN"
+    assert body["command"]["signature"]
+    ack = client.post(f"/sessions/{body['session_id']}/ack", json={"command_id": body["command"]["commandId"], "status": "SUCCESS"}, headers=headers)
+    assert ack.status_code == 200
+
+
+def test_staff_web_login_and_role_sections(client):
+    login = client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False)
+    assert login.status_code == 303
+    page = client.get("/web/dashboard")
+    assert page.status_code == 200
+    assert "Пользователи и сотрудники" in page.text
+    assert "Оборудование" in page.text
+
+
+def test_regular_user_cannot_open_staff_web(client):
+    login = client.post("/web/login", data={"email": "user@example.com", "password": "Password1!"})
+    assert login.status_code == 401
+
+
+def test_admin_can_onboard_composter_with_existing_firmware_secret(client):
+    headers = auth(token(client, "admin@example.com"))
+    secret = "a" * 64
+    response = client.post("/admin/composters", json={"name": "BLE device", "device_id": "composter_000042", "latitude": 55.75, "longitude": 37.61, "secret": secret}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["device_secret"] == secret
+    assert response.json()["qr_payload"].startswith("compost://composter/")

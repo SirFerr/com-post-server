@@ -6,9 +6,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import AccessSession, AuditLog, Composter, Review, ReviewStatus, Role, Telemetry, User, Violation
-from .schemas import ComposterCreate, ComposterUpdate, TelemetryRequest, UserAdminUpdate
-from .security import require_roles
+from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, Telemetry, User, Violation
+from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, TelemetryRequest, UserAdminUpdate
+from .security import require_roles, signed_command
 from .services import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -51,18 +51,19 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
 
 
 @router.get("/composters")
-def composters(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+def composters(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
     return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "radius_m": c.radius_m, "is_available": c.is_available, "fill_level": c.fill_level, "battery_level": c.battery_level, "lock_state": c.lock_state, "last_seen_at": c.last_seen_at, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
 
 
 @router.post("/composters")
 def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
-    composter = Composter(**data.model_dump(), secret=secrets.token_hex(32))
+    device_secret = data.secret or secrets.token_hex(32)
+    composter = Composter(**data.model_dump(exclude={"secret"}), secret=device_secret)
     db.add(composter)
     db.flush()
     audit(db, actor, "composter", composter.id, "COMPOSTER_CREATED")
     db.commit()
-    return {"id": composter.id, "qr_payload": f"compost://composter/{composter.id}"}
+    return {"id": composter.id, "qr_payload": f"compost://composter/{composter.id}", "device_secret": device_secret}
 
 
 @router.patch("/composters/{composter_id}")
@@ -75,6 +76,28 @@ def update_composter(composter_id: str, data: ComposterUpdate, db: Session = Dep
     audit(db, actor, "composter", composter.id, "COMPOSTER_UPDATED", data.model_dump(exclude_none=True))
     db.commit()
     return {"id": composter.id, "is_available": composter.is_available}
+
+
+@router.post("/composters/{composter_id}/debug-command")
+def debug_command(composter_id: str, data: DebugCommandRequest, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
+    action = data.action.upper()
+    if action not in {"OPEN", "CLOSE"}:
+        raise HTTPException(422, "Only OPEN and CLOSE diagnostics are supported")
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    session = AccessSession(
+        user_id=actor.id,
+        composter_id=composter.id,
+        status=SessionStatus.OPEN_REQUESTED if action == "OPEN" else SessionStatus.CLOSE_REQUESTED,
+    )
+    db.add(session)
+    db.flush()
+    payload = signed_command(composter, session.id, action)
+    db.add(DeviceCommand(id=payload["commandId"], session_id=session.id, action=action, nonce=payload["nonce"], issued_at=payload["issuedAt"], expires_at=payload["expiresAt"]))
+    audit(db, actor, "composter", composter.id, f"DEBUG_{action}_REQUESTED", {"session_id": session.id})
+    db.commit()
+    return {"session_id": session.id, "command": payload}
 
 
 @router.post("/composters/{composter_id}/telemetry")

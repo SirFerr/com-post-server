@@ -18,6 +18,7 @@ def database():
             User(id="user-1", email="user@example.com", password_hash=hash_password("Password1!"), role=Role.USER),
             User(id="mod-1", email="moderator@example.com", password_hash=hash_password("Password1!"), role=Role.MODERATOR),
             User(id="admin-1", email="admin@example.com", password_hash=hash_password("Password1!"), role=Role.ADMIN),
+            User(id="engineer-1", email="engineer@example.com", password_hash=hash_password("Password1!"), role=Role.ENGINEER),
             Composter(id="composter-1", name="Test", device_id="device-1", latitude=55.75, longitude=37.61, radius_m=200, secret="test-secret"),
         ])
         db.commit()

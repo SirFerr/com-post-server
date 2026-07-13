@@ -11,7 +11,9 @@ docker compose up --build
 docker compose exec api python -m app.seed
 ```
 
-API: `http://localhost:8000`, Swagger: `/docs`, MinIO console: `http://localhost:9001`.
+API: `http://localhost:8000`, веб-панель персонала: `/web`, Swagger: `/docs`, MinIO console: `http://localhost:9001`.
+
+Веб-панель разделяет возможности по ролям: модерация фотографий, оборудование и телеметрия для инженера, пользователи/роли/блокировки и аудит для администратора. API онбординга компостера принимает существующий секрет прошивки либо генерирует новый и возвращает его один раз.
 
 Тестовые аккаунты после seed: `admin@example.com / Admin123!`, `moderator@example.com / Moderator123!`, `engineer@example.com / Engineer123!`, `user@example.com / User123!`. Это только данные локальной разработки.
 

@@ -1,8 +1,10 @@
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from .models import AccessSession, Composter, DeviceCommand, Review, ReviewStatu
 from .schemas import AccessRequest, CommandAck, LoginRequest, ModerateRequest, RegisterRequest
 from .security import create_token, current_user, hash_password, require_roles, signed_command, verify_password
 from .services import apply_violation, audit, distance_m, photo_url, request_ml_review, reward_review, store_photo
+from .web import router as web_router
 
 
 @asynccontextmanager
@@ -22,6 +25,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Community Compost API", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(web_router)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 
 @app.get("/health")
@@ -97,6 +102,9 @@ def acknowledge(session_id: str, data: CommandAck, db: Session = Depends(get_db)
     command.acknowledged = True
     success = data.status == "SUCCESS"
     session.status = SessionStatus.OPENED if command.action == "OPEN" and success else SessionStatus.CLOSED if success else SessionStatus.FAILED
+    if success:
+        session.composter.lock_state = "OPEN" if command.action == "OPEN" else "CLOSED"
+        session.composter.last_seen_at = datetime.now(timezone.utc)
     if session.status == SessionStatus.CLOSED:
         session.closed_at = datetime.now(timezone.utc)
     db.commit()

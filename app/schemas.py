@@ -40,6 +40,8 @@ class ComposterCreate(BaseModel):
     latitude: float
     longitude: float
     radius_m: float = 100
+    secret: str | None = Field(default=None, min_length=32, max_length=128)
+    is_available: bool = True
 
 
 class ComposterUpdate(BaseModel):
@@ -54,6 +56,10 @@ class TelemetryRequest(BaseModel):
     battery_level: int = Field(ge=0, le=100)
     fill_level: int = Field(ge=0, le=100)
     lock_state: str
+
+
+class DebugCommandRequest(BaseModel):
+    action: str
 
 
 class OrmModel(BaseModel):

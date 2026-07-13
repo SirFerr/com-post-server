@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Com-post · Панель</title><link rel="stylesheet" href="/static/admin.css"></head>
+<body>
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark">C</span><strong>Com-post</strong></div>
+  <nav><a href="#overview">Обзор</a><a href="#equipment">Оборудование</a>{% if actor.role.value in ['ADMIN','MODERATOR'] %}<a href="#moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>{% endif %}{% if actor.role.value == 'ADMIN' %}<a href="#users">Пользователи</a><a href="#audit">Аудит</a>{% endif %}</nav>
+  <div class="account"><span>{{ actor.full_name or actor.email }}</span><small>{{ actor.role.value }}</small><form method="post" action="/web/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="link-button">Выйти</button></form></div>
+</aside>
+<main class="content">
+  <header><div><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p><h1>Добрый день, {{ actor.full_name or actor.email }}</h1></div><span class="live">● Система работает</span></header>
+  <section id="overview"><h2>Сегодня</h2><div class="stats">
+    <article><small>Компостеры онлайн</small><strong>{{ stats.available_composters }} / {{ stats.composters }}</strong></article>
+    <article><small>Ожидают проверки</small><strong>{{ stats.pending_reviews }}</strong></article>
+    <article><small>Операции</small><strong>{{ stats.sessions }}</strong></article>
+    <article><small>Активные нарушения</small><strong>{{ stats.active_violations }}</strong></article>
+  </div></section>
+  <section id="equipment"><div class="section-title"><div><p class="eyebrow">ESP32 / BLE</p><h2>Оборудование</h2></div><span class="muted">BLE-сканирование и команды доступны в Android-приложении</span></div>
+    <div class="table-wrap"><table><thead><tr><th>Точка</th><th>Device ID</th><th>Заполненность</th><th>Батарея</th><th>Замок</th><th>Последний сигнал</th><th>Доступ</th></tr></thead><tbody>
+    {% for c in composters %}<tr><td><strong>{{ c.name }}</strong><small>{{ '%.5f'|format(c.latitude) }}, {{ '%.5f'|format(c.longitude) }}</small></td><td><code>{{ c.device_id }}</code></td><td><span class="meter"><i style="width:{{ c.fill_level }}%"></i></span>{{ c.fill_level }}%</td><td>{{ c.battery_level }}%</td><td><span class="pill">{{ c.lock_state }}</span></td><td>{{ c.last_seen_at or 'ещё нет' }}</td><td>{% if actor.role.value in ['ADMIN','ENGINEER'] %}<form method="post" action="/web/composters/{{ c.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="switch"><input name="available" type="checkbox" value="true" {% if c.is_available %}checked{% endif %} onchange="this.form.submit()"><span></span></label></form>{% else %}{{ 'включён' if c.is_available else 'отключён' }}{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  {% if actor.role.value in ['ADMIN','MODERATOR'] %}<section id="moderation"><div class="section-title"><div><p class="eyebrow">ОЧЕРЕДЬ</p><h2>Модерация</h2></div><span class="counter">{{ reviews|length }}</span></div>
+    <div class="review-grid">{% for row in reviews %}<article class="review"><img src="{{ row.photo_url }}" alt="Фото загрузки"><div><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><h3>{{ row.review.ml_status }}</h3><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><form method="post" action="/web/reviews/{{ row.review.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="comment" placeholder="Комментарий"><input name="violation_reason" value="INVALID_COMPOST" placeholder="Причина нарушения"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></form></div></article>{% else %}<div class="empty">Очередь пуста — всё проверено.</div>{% endfor %}</div>
+  </section>{% endif %}
+  {% if actor.role.value == 'ADMIN' %}<section id="users"><p class="eyebrow">ДОСТУП</p><h2>Пользователи и сотрудники</h2><div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Роль</th><th>Блокировка</th><th></th></tr></thead><tbody>{% for u in users %}<tr><form method="post" action="/web/users/{{ u.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><td><strong>{{ u.full_name or 'Без имени' }}</strong><small>{{ u.email }}</small></td><td><select name="role">{% for role in roles %}<option {% if u.role == role %}selected{% endif %}>{{ role.value }}</option>{% endfor %}</select></td><td><label><input name="blocked" type="checkbox" value="true" {% if u.is_blocked %}checked{% endif %}> заблокирован</label><input name="ban_reason" value="{{ u.ban_reason or '' }}" placeholder="Причина"></td><td><button>Сохранить</button></td></form></tr>{% endfor %}</tbody></table></div></section>
+  <section id="audit"><p class="eyebrow">БЕЗОПАСНОСТЬ</p><h2>Последние действия</h2><div class="timeline">{% for row in audit_rows %}<div><span></span><strong>{{ row.action }}</strong><small>{{ row.entity }} · {{ row.entity_id }} · {{ row.created_at }}</small></div>{% else %}<div class="empty">Действий пока нет.</div>{% endfor %}</div></section>{% endif %}
+</main>
+</body></html>

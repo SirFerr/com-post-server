@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Оборудование{% endblock %}
+{% block content %}
+<header class="page-header"><div><p class="eyebrow">ESP32 / BLE</p><h1>Оборудование</h1><p class="muted">Нажмите на карточку, чтобы открыть действия и историю</p></div></header>
+<form class="search-row" method="get"><input name="q" value="{{ q }}" placeholder="Поиск по названию или Device ID"><button>Найти</button></form>
+<div class="filters">{% for key,label in [('ALL','Все'),('ACTIVE','Активные'),('DISABLED','Отключённые'),('FULL','Нужно освободить')] %}<a class="{{ 'active' if status == key }}" href="?status={{ key }}&q={{ q }}">{{ label }}</a>{% endfor %}</div>
+<section class="card-list">
+{% for item in composters %}<a class="entity-card" href="/web/equipment/{{ item.id }}">
+  <div><h2>{{ item.name }}</h2><code>{{ item.device_id }}</code></div>
+  <div class="entity-meta"><span class="status {{ 'ok' if item.is_available else 'off' }}">{{ 'Активен' if item.is_available else 'Отключён' }}</span>{% if item.needs_emptying %}<span class="status warn">Заполнен</span>{% endif %}</div>
+  <p>Батарея {{ item.battery_level }}% · замок {{ item.lock_state }}</p><small>Последний сигнал: {{ item.last_seen_at or 'ещё не получен' }}</small>
+</a>{% else %}<div class="empty">Оборудование не найдено.</div>{% endfor %}
+</section>
+{% endblock %}

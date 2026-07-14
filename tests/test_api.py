@@ -208,8 +208,36 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "Пользователи и сотрудники" in page.text
+    assert "/static/admin.css?v=4" in page.text
+    assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
+    assert "Последние действия" not in page.text
+
+    equipment = client.get("/web/equipment")
+    assert equipment.status_code == 200
+    assert "/web/equipment/composter-1" in equipment.text
+    assert "current_password" not in equipment.text
+    equipment_detail = client.get("/web/equipment/composter-1")
+    assert equipment_detail.status_code == 200
+    assert "equipment-confirm" in equipment_detail.text
+    assert "Действия с оборудованием" in equipment_detail.text
+
+    users = client.get("/web/users")
+    assert users.status_code == 200
+    assert "/web/users/user-1" in users.text
+    assert "current_password" not in users.text
+    user_detail = client.get("/web/users/user-1")
+    assert user_detail.status_code == 200
+    assert "user-confirm" in user_detail.text
+    assert "Баллы, блокировки и роли" in user_detail.text
+
+    assert client.get("/web/moderation").status_code == 200
+    map_page = client.get("/web/map")
+    assert map_page.status_code == 200
+    assert "composter-map" in map_page.text
+    assert "/static/vendor/leaflet.css?v=1" in map_page.text
+    assert "/static/vendor/leaflet.js?v=1" in map_page.text
+    assert client.get("/static/vendor/leaflet.js").status_code == 200
 
 
 def test_regular_user_cannot_open_staff_web(client):

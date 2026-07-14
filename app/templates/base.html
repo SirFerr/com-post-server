@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}ComPost{% endblock %} · Панель</title>
+  <link rel="stylesheet" href="/static/admin.css?v=4">
+  <link rel="stylesheet" href="/static/review.css?v=4">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/web/dashboard"><span class="brand-mark">C</span><strong>ComPost</strong></a>
+  <div class="role-accent">{{ actor.role.value }}</div>
+  <nav>
+    {% if actor.role.value == 'ENGINEER' %}
+      <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
+      <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
+    {% elif actor.role.value == 'MODERATOR' %}
+      <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
+      <a class="{{ 'active' if active == 'moderation' }}" href="/web/moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>
+      <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
+    {% else %}
+      <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
+      <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
+      <a class="{{ 'active' if active == 'users' }}" href="/web/users">Пользователи</a>
+      <a class="{{ 'active' if active == 'moderation' }}" href="/web/moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>
+    {% endif %}
+    <a class="{{ 'active' if active == 'map' }}" href="/web/map">Карта</a>
+  </nav>
+  <div class="account">
+    <span>{{ actor.full_name or actor.email }}</span><small>{{ actor.email }}</small>
+    <form method="post" action="/web/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="link-button">Выйти</button></form>
+  </div>
+</aside>
+<main class="content">
+  {% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

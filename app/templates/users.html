@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<header class="page-header"><div><p class="eyebrow">ДОСТУП И РОЛИ</p><h1>Пользователи</h1><p class="muted">Действия и история находятся внутри карточки пользователя</p></div></header>
+<form class="search-row" method="get"><input name="q" value="{{ q }}" placeholder="Поиск по имени или почте"><button>Найти</button></form>
+<div class="filters">{% for key,label in [('ALL','Все'),('ACTIVE','Активные'),('BLOCKED','Заблокированные'),('STAFF','Сотрудники')] %}<a class="{{ 'active' if status == key }}" href="?status={{ key }}&q={{ q }}">{{ label }}</a>{% endfor %}</div>
+<section class="card-list">
+{% for item in users %}<a class="entity-card user-card" href="/web/users/{{ item.id }}"><div><h2>{{ item.full_name or item.email }}</h2><p>{{ item.email }}{% if item.role.value != 'USER' %} · {{ item.role.value }}{% endif %}</p></div><span class="status {{ 'off' if item.is_blocked else 'ok' }}">{{ 'Заблокирован' if item.is_blocked else 'Активен' }}</span>{% if item.ban_reason %}<small>{{ item.ban_reason }}</small>{% endif %}</a>{% else %}<div class="empty">Пользователи не найдены.</div>{% endfor %}
+</section>
+{% endblock %}

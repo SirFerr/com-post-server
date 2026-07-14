@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Карта{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/static/vendor/leaflet.css?v=1">{% endblock %}
+{% block content %}
+<header class="page-header map-header"><div><p class="eyebrow">ТОЧКИ</p><h1>Карта компостеров</h1></div></header>
+<div id="composter-map" class="web-map"></div>
+<script id="map-data" type="application/json">{{ markers|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="/static/vendor/leaflet.js?v=1"></script><script>
+const points=JSON.parse(document.getElementById('map-data').textContent);const map=L.map('composter-map',{zoomControl:false}).setView([55.7558,37.6173],11);L.control.zoom({position:'bottomright'}).addTo(map);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);const bounds=[];points.forEach(p=>{const marker=L.circleMarker([p.latitude,p.longitude],{radius:10,color:p.full?'#ff856f':'#caff3d',fillColor:p.available?'#caff3d':'#6e7771',fillOpacity:1,weight:3}).addTo(map);marker.bindPopup(`<strong>${p.name}</strong><br>${p.available?'Доступен':'Отключён'}${p.full?' · заполнен':''}<br><a href="/web/equipment/${p.id}">Открыть оборудование</a>`);bounds.push([p.latitude,p.longitude])});if(bounds.length)map.fitBounds(bounds,{padding:[50,50],maxZoom:15});
+</script>{% endblock %}

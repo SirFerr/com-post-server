@@ -224,11 +224,15 @@ def test_composter_onboarding_resume_is_idempotent(client):
     headers = auth(token(client, "engineer@example.com"))
     payload = {"name": "BLE device", "device_id": "composter_resume", "latitude": 55.75, "longitude": 37.61, "is_available": False}
     first = client.post("/admin/composters", json=payload, headers=headers)
+    activated = client.post(f"/admin/composters/{first.json()['id']}/activate-provisioned", headers=headers)
     second = client.post("/admin/composters", json={**payload, "name": "Updated point"}, headers=headers)
     assert first.status_code == 200
+    assert activated.status_code == 200
     assert second.status_code == 200
     assert second.json()["id"] == first.json()["id"]
     assert second.json()["device_secret"] == first.json()["device_secret"]
+    equipment = client.get("/admin/composters", headers=headers).json()
+    assert next(row for row in equipment if row["id"] == first.json()["id"])["is_available"] is True
 
 
 def test_android_user_history_records_actor_role_and_block_changes(client):

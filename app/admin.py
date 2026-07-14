@@ -124,7 +124,6 @@ def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor
         existing.latitude = data.latitude
         existing.longitude = data.longitude
         existing.radius_m = data.radius_m
-        existing.is_available = False
         audit(db, actor, "composter", existing.id, "PROVISIONING_RESUMED")
         db.commit()
         return {"id": existing.id, "qr_payload": f"compost://composter/{existing.id}", "device_secret": existing.secret}

@@ -107,10 +107,12 @@ def moderate_review(request: Request, review_id: str, approved: bool = Form(), c
 
 
 @router.post("/users/{user_id}")
-def change_user(request: Request, user_id: str, role: str = Form(), blocked: bool = Form(False), ban_reason: str = Form(""), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def change_user(request: Request, user_id: str, role: str = Form(), blocked: bool = Form(False), ban_reason: str = Form(""), current_password: str = Form(), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     if actor.role != Role.ADMIN:
         raise HTTPException(403, "Administrator access required")
+    if not verify_password(current_password, actor.password_hash):
+        raise HTTPException(403, "Password confirmation failed")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
@@ -123,10 +125,12 @@ def change_user(request: Request, user_id: str, role: str = Form(), blocked: boo
 
 
 @router.post("/composters/{composter_id}")
-def change_composter(request: Request, composter_id: str, available: bool = Form(False), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def change_composter(request: Request, composter_id: str, available: bool = Form(False), current_password: str = Form(), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     if actor.role not in {Role.ADMIN, Role.ENGINEER}:
         raise HTTPException(403, "Engineer access required")
+    if not verify_password(current_password, actor.password_hash):
+        raise HTTPException(403, "Password confirmation failed")
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Composter not found")

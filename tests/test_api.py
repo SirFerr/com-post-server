@@ -1,3 +1,6 @@
+import jwt
+
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AccessSession, DeviceCommand, Review, SessionStatus, User
 from tests.conftest import token
@@ -11,7 +14,18 @@ def test_health_and_login(client):
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/", follow_redirects=False).headers["location"] == "/web"
     assert client.post("/auth/login", json={"email": "user@example.com", "password": "bad-password"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "USER@EXAMPLE.COM", "password": "Password1!"}).status_code == 200
     assert token(client)
+
+
+def test_expired_and_invalid_tokens_have_distinct_errors(client):
+    expired = jwt.encode({"sub": "user-1", "exp": 1}, get_settings().jwt_secret, algorithm="HS256")
+    expired_response = client.get("/profile", headers=auth(expired))
+    invalid_response = client.get("/profile", headers=auth("not-a-token"))
+    assert expired_response.status_code == 401
+    assert expired_response.json()["detail"] == "Access token expired"
+    assert invalid_response.status_code == 401
+    assert invalid_response.json()["detail"] == "Invalid access token"
 
 
 def test_register_profile_and_empty_history(client):
@@ -24,6 +38,31 @@ def test_register_profile_and_empty_history(client):
     assert profile.json()["active_violations"] == 0
     assert client.get("/profile/deposits", headers=headers).json() == []
     assert client.post("/auth/register", json={"email": "new@example.com", "password": "Password2!", "full_name": "Дубль"}).status_code == 409
+
+
+def test_registration_validates_email_and_password_strength(client):
+    assert client.post("/auth/register", json={"email": "not-an-email", "password": "Password2!", "full_name": "Тест"}).status_code == 422
+    assert client.post("/auth/register", json={"email": "weak@example.com", "password": "password", "full_name": "Тест"}).status_code == 422
+    assert client.post("/auth/register", json={"email": "plain@example.com", "password": "Password2", "full_name": "Без спецсимвола"}).status_code == 201
+
+
+def test_account_password_change_and_delete_require_current_password(client):
+    headers = auth(token(client))
+    assert client.post("/profile/change-password", json={"current_password": "wrong-pass", "new_password": "Changed123"}, headers=headers).status_code == 403
+    assert client.post("/profile/change-password", json={"current_password": "Password1!", "new_password": "Changed123"}, headers=headers).status_code == 200
+    changed_headers = auth(client.post("/auth/login", json={"email": "user@example.com", "password": "Changed123"}).json()["access_token"])
+    assert client.post("/profile/delete", json={"current_password": "wrong-pass"}, headers=changed_headers).status_code == 403
+    assert client.post("/profile/delete", json={"current_password": "Changed123"}, headers=changed_headers).status_code == 200
+
+
+def test_full_report_and_confirmed_composter_delete(client):
+    user_headers = auth(token(client))
+    admin_headers = auth(token(client, "admin@example.com"))
+    assert client.post("/composters/composter-1/report-full", headers=user_headers).status_code == 200
+    equipment = client.get("/admin/composters", headers=admin_headers).json()[0]
+    assert equipment["needs_emptying"] is True
+    assert client.post("/admin/composters/composter-1/delete", json={"current_password": "wrong-pass"}, headers=admin_headers).status_code == 403
+    assert client.post("/admin/composters/composter-1/delete", json={"current_password": "Password1!"}, headers=admin_headers).status_code == 200
 
 
 def test_access_rejects_bad_location_and_replay(client):
@@ -92,7 +131,7 @@ def test_admin_dashboard_and_user_blocking(client):
     dashboard = client.get("/admin/dashboard", headers=headers)
     assert dashboard.status_code == 200
     assert dashboard.json()["composters"] == 1
-    updated = client.patch("/admin/users/user-1", json={"is_blocked": True, "ban_reason": "manual test"}, headers=headers)
+    updated = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "is_blocked": True, "ban_reason": "manual test"}, headers=headers)
     assert updated.status_code == 200
     assert updated.json()["is_blocked"] is True
     with SessionLocal() as db:

@@ -56,6 +56,7 @@ class Composter(Base):
     radius_m: Mapped[float] = mapped_column(Float, default=100)
     secret: Mapped[str] = mapped_column(String(128))
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
+    needs_emptying: Mapped[bool] = mapped_column(Boolean, default=False)
     fill_level: Mapped[int] = mapped_column(Integer, default=0)
     battery_level: Mapped[int] = mapped_column(Integer, default=100)
     lock_state: Mapped[str] = mapped_column(String(20), default="CLOSED")

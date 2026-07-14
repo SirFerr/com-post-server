@@ -2,16 +2,21 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, Telemetry, User, Violation
-from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, TelemetryRequest, UserAdminUpdate
-from .security import require_roles, signed_command
+from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, Telemetry, User, UserScore, Violation
+from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, PasswordConfirmation, TelemetryRequest, UserAdminUpdate
+from .security import require_roles, signed_command, verify_password
 from .services import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def confirm_password(actor: User, password: str) -> None:
+    if not verify_password(password, actor.password_hash):
+        raise HTTPException(403, "Password confirmation failed")
 
 
 @router.get("/dashboard")
@@ -34,14 +39,20 @@ def users(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.AD
 
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    confirm_password(actor, data.current_password)
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     if data.role is not None:
         try:
-            user.role = Role(data.role)
+            requested_role = Role(data.role)
         except ValueError:
             raise HTTPException(422, "Unknown role")
+        if requested_role == Role.ADMIN:
+            raise HTTPException(403, "Administrator role can only be granted from the web console")
+        if user.role == Role.ADMIN:
+            raise HTTPException(403, "Administrator accounts can only be changed from the web console")
+        user.role = requested_role
     if data.is_blocked is not None:
         user.is_blocked = data.is_blocked
         user.ban_reason = data.ban_reason if data.is_blocked else None
@@ -52,11 +63,11 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
 
 @router.get("/composters")
 def composters(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
-    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "radius_m": c.radius_m, "is_available": c.is_available, "fill_level": c.fill_level, "battery_level": c.battery_level, "lock_state": c.lock_state, "last_seen_at": c.last_seen_at, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
+    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "radius_m": c.radius_m, "is_available": c.is_available, "needs_emptying": c.needs_emptying, "battery_level": c.battery_level, "lock_state": c.lock_state, "last_seen_at": c.last_seen_at, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
 
 
 @router.post("/composters")
-def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
     device_secret = data.secret or secrets.token_hex(32)
     composter = Composter(**data.model_dump(exclude={"secret"}), secret=device_secret)
     db.add(composter)
@@ -68,14 +79,61 @@ def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor
 
 @router.patch("/composters/{composter_id}")
 def update_composter(composter_id: str, data: ComposterUpdate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    if not data.current_password:
+        raise HTTPException(422, "Password confirmation required")
+    confirm_password(actor, data.current_password)
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Composter not found")
-    for key, value in data.model_dump(exclude_none=True).items():
+    for key, value in data.model_dump(exclude_none=True, exclude={"current_password"}).items():
         setattr(composter, key, value)
     audit(db, actor, "composter", composter.id, "COMPOSTER_UPDATED", data.model_dump(exclude_none=True))
     db.commit()
     return {"id": composter.id, "is_available": composter.is_available}
+
+
+@router.post("/composters/{composter_id}/activate-provisioned")
+def activate_provisioned(composter_id: str, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    composter.is_available = True
+    audit(db, actor, "composter", composter.id, "PROVISIONING_COMPLETED")
+    db.commit()
+    return {"status": "active"}
+
+
+@router.post("/composters/{composter_id}/clear-full")
+def clear_full_report(composter_id: str, data: PasswordConfirmation, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    confirm_password(actor, data.current_password)
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    composter.needs_emptying = False
+    audit(db, actor, "composter", composter.id, "FULL_REPORT_CLEARED")
+    db.commit()
+    return {"status": "cleared"}
+
+
+@router.post("/composters/{composter_id}/delete")
+def delete_composter(composter_id: str, data: PasswordConfirmation, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    confirm_password(actor, data.current_password)
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    session_ids = list(db.scalars(select(AccessSession.id).where(AccessSession.composter_id == composter.id)).all())
+    review_ids = list(db.scalars(select(Review.id).where(Review.session_id.in_(session_ids))).all()) if session_ids else []
+    if review_ids:
+        db.execute(delete(Violation).where(Violation.review_id.in_(review_ids)))
+        db.execute(delete(Review).where(Review.id.in_(review_ids)))
+    if session_ids:
+        db.execute(delete(DeviceCommand).where(DeviceCommand.session_id.in_(session_ids)))
+        db.execute(delete(AccessSession).where(AccessSession.id.in_(session_ids)))
+    db.execute(delete(Telemetry).where(Telemetry.composter_id == composter.id))
+    db.delete(composter)
+    audit(db, actor, "composter", composter_id, "COMPOSTER_DELETED")
+    db.commit()
+    return {"status": "deleted"}
 
 
 @router.post("/composters/{composter_id}/debug-command")

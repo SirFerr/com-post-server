@@ -6,13 +6,13 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .admin import router as admin_router
 from .database import Base, engine, get_db
-from .models import AccessSession, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, User, UserScore, Violation
-from .schemas import AccessRequest, CommandAck, LoginRequest, ModerateRequest, RegisterRequest
+from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, User, UserScore, Violation
+from .schemas import AccessRequest, ChangePasswordRequest, CommandAck, LoginRequest, ModerateRequest, PasswordConfirmation, RegisterRequest
 from .security import create_token, current_user, hash_password, require_roles, signed_command, verify_password
 from .services import apply_violation, audit, distance_m, photo_url, request_ml_review, reward_review, store_photo
 from .web import router as web_router
@@ -42,7 +42,7 @@ def health():
 
 @app.post("/auth/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email))
+    user = db.scalar(select(User).where(User.email == data.email.lower()))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
     return {"access_token": create_token(user), "token_type": "bearer", "role": user.role}
@@ -63,7 +63,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
 @app.get("/composters")
 def composters(db: Session = Depends(get_db), _: User = Depends(current_user)):
-    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "is_available": c.is_available, "fill_level": c.fill_level, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
+    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "is_available": c.is_available, "needs_emptying": c.needs_emptying, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
 
 
 @app.get("/composters/resolve-qr/{composter_id}")
@@ -71,7 +71,18 @@ def resolve_qr(composter_id: str, db: Session = Depends(get_db), _: User = Depen
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Unknown composter QR code")
-    return {"id": composter.id, "name": composter.name, "device_id": composter.device_id, "latitude": composter.latitude, "longitude": composter.longitude, "is_available": composter.is_available, "fill_level": composter.fill_level, "qr_payload": f"compost://composter/{composter.id}"}
+    return {"id": composter.id, "name": composter.name, "device_id": composter.device_id, "latitude": composter.latitude, "longitude": composter.longitude, "is_available": composter.is_available, "needs_emptying": composter.needs_emptying, "qr_payload": f"compost://composter/{composter.id}"}
+
+
+@app.post("/composters/{composter_id}/report-full")
+def report_full(composter_id: str, db: Session = Depends(get_db), actor: User = Depends(current_user)):
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    composter.needs_emptying = True
+    audit(db, actor, "composter", composter.id, "FULL_REPORTED")
+    db.commit()
+    return {"status": "reported"}
 
 
 @app.post("/composters/{composter_id}/access")
@@ -259,6 +270,43 @@ def score(db: Session = Depends(get_db), user: User = Depends(current_user)):
 def profile(db: Session = Depends(get_db), user: User = Depends(current_user)):
     active_violations = db.scalar(select(func.count(Violation.id)).where(Violation.user_id == user.id, Violation.is_active.is_(True))) or 0
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "active_violations": active_violations, "created_at": user.created_at}
+
+
+@app.post("/profile/change-password")
+def change_password(data: ChangePasswordRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(403, "Password confirmation failed")
+    if verify_password(data.new_password, user.password_hash):
+        raise HTTPException(409, "New password must be different")
+    user.password_hash = hash_password(data.new_password)
+    audit(db, user, "user", user.id, "PASSWORD_CHANGED")
+    db.commit()
+    return {"status": "changed"}
+
+
+@app.post("/profile/delete")
+def delete_account(data: PasswordConfirmation, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(403, "Password confirmation failed")
+    if user.role == Role.ADMIN:
+        admins = db.scalar(select(func.count(User.id)).where(User.role == Role.ADMIN)) or 0
+        if admins <= 1:
+            raise HTTPException(409, "Last administrator cannot be deleted")
+    session_ids = list(db.scalars(select(AccessSession.id).where(AccessSession.user_id == user.id)).all())
+    review_ids = list(db.scalars(select(Review.id).where(Review.session_id.in_(session_ids))).all()) if session_ids else []
+    if review_ids:
+        db.execute(delete(Violation).where(Violation.review_id.in_(review_ids)))
+        db.execute(delete(Review).where(Review.id.in_(review_ids)))
+    db.execute(delete(Violation).where(Violation.user_id == user.id))
+    if session_ids:
+        db.execute(delete(DeviceCommand).where(DeviceCommand.session_id.in_(session_ids)))
+        db.execute(delete(AccessSession).where(AccessSession.id.in_(session_ids)))
+    db.execute(update(Review).where(Review.reviewed_by == user.id).values(reviewed_by=None))
+    db.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
+    db.execute(delete(UserScore).where(UserScore.user_id == user.id))
+    db.delete(user)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @app.get("/profile/deposits")

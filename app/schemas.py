@@ -1,15 +1,32 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+import re
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=8, max_length=128)
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=2, max_length=255)
+
+    @field_validator("password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        if not re.search(r"[A-Z]", value) or not re.search(r"[a-z]", value) or not re.search(r"\d", value):
+            raise ValueError("Password must contain upper and lower case letters and a digit")
+        return value
+
+    @field_validator("full_name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if len(cleaned) < 2:
+            raise ValueError("Full name is too short")
+        return cleaned
 
 
 class AccessRequest(BaseModel):
@@ -29,6 +46,7 @@ class ModerateRequest(BaseModel):
 
 
 class UserAdminUpdate(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
     role: str | None = None
     is_blocked: bool | None = None
     ban_reason: str | None = None
@@ -45,6 +63,7 @@ class ComposterCreate(BaseModel):
 
 
 class ComposterUpdate(BaseModel):
+    current_password: str | None = Field(default=None, min_length=8, max_length=128)
     name: str | None = None
     latitude: float | None = None
     longitude: float | None = None
@@ -60,6 +79,22 @@ class TelemetryRequest(BaseModel):
 
 class DebugCommandRequest(BaseModel):
     action: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        if not re.search(r"[A-Z]", value) or not re.search(r"[a-z]", value) or not re.search(r"\d", value):
+            raise ValueError("Password must contain upper and lower case letters and a digit")
+        return value
+
+
+class PasswordConfirmation(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
 
 
 class OrmModel(BaseModel):

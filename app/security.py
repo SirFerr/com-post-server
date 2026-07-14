@@ -35,13 +35,16 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def create_token(user: User) -> str:
     settings = get_settings()
-    payload = {"sub": user.id, "role": user.role.value, "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_ttl_minutes)}
+    now = datetime.now(timezone.utc)
+    payload = {"sub": user.id, "role": user.role.value, "iat": now, "exp": now + timedelta(minutes=settings.jwt_ttl_minutes)}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
 def user_from_token(token: str, db: Session) -> User:
     try:
         user_id = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])["sub"]
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Access token expired")
     except (jwt.PyJWTError, KeyError):
         raise HTTPException(401, "Invalid access token")
     user = db.get(User, user_id)

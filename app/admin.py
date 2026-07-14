@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, Telemetry, User, UserScore, Violation
-from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, PasswordConfirmation, TelemetryRequest, UserAdminUpdate
+from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, PasswordConfirmation, TelemetryRequest, UserAdminUpdate
 from .security import require_roles, signed_command, verify_password
 from .services import audit
 
@@ -172,6 +172,17 @@ def clear_full_report(composter_id: str, data: PasswordConfirmation, db: Session
     audit(db, actor, "composter", composter.id, "FULL_REPORT_CLEARED")
     db.commit()
     return {"status": "cleared"}
+
+
+@router.post("/composters/{composter_id}/full-state")
+def set_full_state(composter_id: str, data: FullStateRequest, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    composter.needs_emptying = data.needs_emptying
+    audit(db, actor, "composter", composter.id, "FULL_REPORTED" if data.needs_emptying else "FULL_REPORT_CLEARED")
+    db.commit()
+    return {"status": "full" if data.needs_emptying else "cleared"}
 
 
 @router.post("/composters/{composter_id}/delete")

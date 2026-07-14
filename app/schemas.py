@@ -71,6 +71,10 @@ class ComposterUpdate(BaseModel):
     is_available: bool | None = None
 
 
+class FullStateRequest(BaseModel):
+    needs_emptying: bool
+
+
 class TelemetryRequest(BaseModel):
     battery_level: int = Field(ge=0, le=100)
     fill_level: int = Field(ge=0, le=100)

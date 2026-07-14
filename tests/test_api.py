@@ -65,6 +65,19 @@ def test_full_report_and_confirmed_composter_delete(client):
     assert client.post("/admin/composters/composter-1/delete", json={"current_password": "Password1!"}, headers=admin_headers).status_code == 200
 
 
+def test_staff_can_confirm_full_state_without_password(client):
+    moderator_headers = auth(token(client, "moderator@example.com"))
+    engineer_headers = auth(token(client, "engineer@example.com"))
+    user_headers = auth(token(client))
+    endpoint = "/admin/composters/composter-1/full-state"
+
+    assert client.post(endpoint, json={"needs_emptying": True}, headers=moderator_headers).status_code == 200
+    assert client.get("/admin/composters", headers=moderator_headers).json()[0]["needs_emptying"] is True
+    assert client.post(endpoint, json={"needs_emptying": False}, headers=engineer_headers).status_code == 200
+    assert client.get("/admin/composters", headers=engineer_headers).json()[0]["needs_emptying"] is False
+    assert client.post(endpoint, json={"needs_emptying": True}, headers=user_headers).status_code == 403
+
+
 def test_access_rejects_bad_location_and_replay(client):
     headers = auth(token(client))
     far = client.post("/composters/composter-1/access", json={"latitude": 1, "longitude": 1}, headers=headers)

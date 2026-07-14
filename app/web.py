@@ -97,9 +97,13 @@ def moderate_review(request: Request, review_id: str, approved: bool = Form(), c
         review.comment = comment.strip() or None
         review.reviewed_by = actor.id
         session = db.get(AccessSession, review.session_id)
+        user = db.get(User, session.user_id)
+        was_blocked = user.is_blocked
         if not approved:
             review.violation_reason = violation_reason
             apply_violation(db, review, session, violation_reason)
+            if not was_blocked and user.is_blocked:
+                audit(db, actor, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})
         reward_review(db, session, approved)
         audit(db, actor, "review", review.id, "REVIEW_APPROVED" if approved else "REVIEW_REJECTED")
         db.commit()
@@ -116,10 +120,15 @@ def change_user(request: Request, user_id: str, role: str = Form(), blocked: boo
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
+    previous_role = user.role
+    previous_blocked = user.is_blocked
     user.role = Role(role)
     user.is_blocked = blocked
     user.ban_reason = ban_reason.strip() if blocked else None
-    audit(db, actor, "user", user.id, "USER_UPDATED_FROM_WEB", {"role": role, "blocked": blocked})
+    if user.role != previous_role:
+        audit(db, actor, "user", user.id, "USER_ROLE_CHANGED", {"from": previous_role.value, "to": user.role.value})
+    if user.is_blocked != previous_blocked:
+        audit(db, actor, "user", user.id, "USER_BLOCKED" if user.is_blocked else "USER_UNBLOCKED", {"reason": user.ban_reason})
     db.commit()
     return RedirectResponse("/web/dashboard#users", 303)
 

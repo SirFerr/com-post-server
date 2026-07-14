@@ -1,9 +1,9 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Com-post · Панель</title><link rel="stylesheet" href="/static/admin.css"><link rel="stylesheet" href="/static/review.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ComPost · Панель</title><link rel="stylesheet" href="/static/admin.css"><link rel="stylesheet" href="/static/review.css"></head>
 <body>
 <aside class="sidebar">
-  <div class="brand"><span class="brand-mark">C</span><strong>Com-post</strong></div>
+  <div class="brand"><span class="brand-mark">C</span><strong>ComPost</strong></div>
   <nav><a href="#overview">Обзор</a><a href="#equipment">Оборудование</a>{% if actor.role.value in ['ADMIN','MODERATOR'] %}<a href="#moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>{% endif %}{% if actor.role.value == 'ADMIN' %}<a href="#users">Пользователи</a><a href="#audit">Аудит</a>{% endif %}</nav>
   <div class="account"><span>{{ actor.full_name or actor.email }}</span><small>{{ actor.role.value }}</small><form method="post" action="/web/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="link-button">Выйти</button></form></div>
 </aside>

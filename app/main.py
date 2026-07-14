@@ -128,6 +128,7 @@ def request_access(composter_id: str, data: AccessRequest, db: Session = Depends
     session = AccessSession(user_id=user.id, composter_id=composter.id)
     db.add(session)
     db.flush()
+    audit(db, user, "composter", composter.id, "OPEN_REQUESTED", {"session_id": session.id})
     payload = signed_command(composter, session.id, "OPEN")
     db.add(DeviceCommand(id=payload["commandId"], session_id=session.id, action="OPEN", nonce=payload["nonce"], issued_at=payload["issuedAt"], expires_at=payload["expiresAt"]))
     db.commit()
@@ -174,6 +175,7 @@ def upload_photo(session_id: str, file: UploadFile = File(...), db: Session = De
     review = Review(session_id=session.id, photo_key=key, ml_status=ml.get("status", "NEEDS_MANUAL_REVIEW"), ml_confidence=float(ml.get("confidence", 0)), ml_violations=json.dumps(ml.get("violations", []), ensure_ascii=False))
     db.add(review)
     session.status = SessionStatus.CLOSE_REQUESTED
+    audit(db, user, "composter", session.composter_id, "CLOSE_REQUESTED", {"session_id": session.id})
     payload = signed_command(session.composter, session.id, "CLOSE")
     db.add(DeviceCommand(id=payload["commandId"], session_id=session.id, action="CLOSE", nonce=payload["nonce"], issued_at=payload["issuedAt"], expires_at=payload["expiresAt"]))
     db.commit()
@@ -234,9 +236,13 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
     review.comment = data.comment
     review.reviewed_by = moderator.id
     session = db.get(AccessSession, review.session_id)
+    user = db.get(User, session.user_id)
+    was_blocked = user.is_blocked
     if not data.approved:
         review.violation_reason = data.violation_reason or "INVALID_COMPOST"
         apply_violation(db, review, session, review.violation_reason)
+        if not was_blocked and user.is_blocked:
+            audit(db, moderator, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})
     reward_review(db, session, data.approved)
     audit(db, moderator, "review", review.id, "REVIEW_APPROVED" if data.approved else "REVIEW_REJECTED")
     db.commit()

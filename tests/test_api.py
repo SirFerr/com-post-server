@@ -204,6 +204,13 @@ def test_regular_user_cannot_open_staff_web(client):
     assert login.status_code == 401
 
 
+def test_password_allows_but_does_not_require_special_characters(client):
+    plain = client.post("/auth/register", json={"email": "plain@example.com", "password": "Strong123", "full_name": "Plain"})
+    special = client.post("/auth/register", json={"email": "special@example.com", "password": "Strong123!", "full_name": "Special"})
+    assert plain.status_code == 201
+    assert special.status_code == 201
+
+
 def test_admin_can_onboard_composter_with_existing_firmware_secret(client):
     headers = auth(token(client, "admin@example.com"))
     secret = "a" * 64
@@ -211,3 +218,36 @@ def test_admin_can_onboard_composter_with_existing_firmware_secret(client):
     assert response.status_code == 200
     assert response.json()["device_secret"] == secret
     assert response.json()["qr_payload"].startswith("compost://composter/")
+
+
+def test_composter_onboarding_resume_is_idempotent(client):
+    headers = auth(token(client, "engineer@example.com"))
+    payload = {"name": "BLE device", "device_id": "composter_resume", "latitude": 55.75, "longitude": 37.61, "is_available": False}
+    first = client.post("/admin/composters", json=payload, headers=headers)
+    second = client.post("/admin/composters", json={**payload, "name": "Updated point"}, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["device_secret"] == first.json()["device_secret"]
+
+
+def test_android_user_history_records_actor_role_and_block_changes(client):
+    headers = auth(token(client, "admin@example.com"))
+    role_change = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "role": "MODERATOR"}, headers=headers)
+    block = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "is_blocked": True, "ban_reason": "Test"}, headers=headers)
+    assert role_change.status_code == 200
+    assert block.status_code == 200
+    history = client.get("/admin/users/user-1/history", headers=headers)
+    assert history.status_code == 200
+    assert {row["action"] for row in history.json()} >= {"USER_ROLE_CHANGED", "USER_BLOCKED"}
+    assert all(row["actor_email"] == "admin@example.com" for row in history.json())
+
+
+def test_android_equipment_history_contains_access_and_full_report(client):
+    user_headers = auth(token(client))
+    admin_headers = auth(token(client, "admin@example.com"))
+    assert client.post("/composters/composter-1/report-full", headers=user_headers).status_code == 200
+    assert client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user_headers).status_code == 200
+    history = client.get("/admin/composters/composter-1/history", headers=admin_headers)
+    assert history.status_code == 200
+    assert {row["action"] for row in history.json()} >= {"FULL_REPORTED", "OPEN_REQUESTED"}

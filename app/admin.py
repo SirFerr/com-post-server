@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
@@ -37,12 +37,40 @@ def users(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.AD
     return [{"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "is_blocked": u.is_blocked, "ban_reason": u.ban_reason, "created_at": u.created_at} for u in db.scalars(select(User).order_by(User.created_at.desc())).all()]
 
 
+@router.get("/users/{user_id}/history")
+def user_history(user_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    review_ids = list(db.scalars(
+        select(Review.id).join(AccessSession, Review.session_id == AccessSession.id).where(AccessSession.user_id == user_id)
+    ).all())
+    conditions = [and_(AuditLog.entity == "user", AuditLog.entity_id == user_id)]
+    if review_ids:
+        conditions.append(and_(AuditLog.entity == "review", AuditLog.entity_id.in_(review_ids)))
+    rows = list(db.scalars(
+        select(AuditLog).where(or_(*conditions)).order_by(AuditLog.created_at.desc()).limit(100)
+    ).all())
+    actor_ids = {row.user_id for row in rows if row.user_id}
+    actors = {u.id: u for u in db.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    return [{
+        "id": row.id,
+        "action": row.action,
+        "details": row.details,
+        "created_at": row.created_at,
+        "actor_name": actors[row.user_id].full_name if row.user_id in actors else None,
+        "actor_email": actors[row.user_id].email if row.user_id in actors else None,
+    } for row in rows]
+
+
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
     confirm_password(actor, data.current_password)
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
+    previous_role = user.role
+    previous_blocked = user.is_blocked
     if data.role is not None:
         try:
             requested_role = Role(data.role)
@@ -56,9 +84,31 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
     if data.is_blocked is not None:
         user.is_blocked = data.is_blocked
         user.ban_reason = data.ban_reason if data.is_blocked else None
-    audit(db, actor, "user", user.id, "USER_UPDATED", data.model_dump(exclude_none=True))
+    if user.role != previous_role:
+        audit(db, actor, "user", user.id, "USER_ROLE_CHANGED", {"from": previous_role.value, "to": user.role.value})
+    if user.is_blocked != previous_blocked:
+        audit(db, actor, "user", user.id, "USER_BLOCKED" if user.is_blocked else "USER_UNBLOCKED", {"reason": user.ban_reason})
     db.commit()
     return {"id": user.id, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason}
+
+
+@router.get("/composters/{composter_id}/history")
+def composter_history(composter_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
+    if not db.get(Composter, composter_id):
+        raise HTTPException(404, "Composter not found")
+    rows = list(db.scalars(
+        select(AuditLog).where(AuditLog.entity == "composter", AuditLog.entity_id == composter_id).order_by(AuditLog.created_at.desc()).limit(100)
+    ).all())
+    actor_ids = {row.user_id for row in rows if row.user_id}
+    actors = {u.id: u for u in db.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    return [{
+        "id": row.id,
+        "action": row.action,
+        "details": row.details,
+        "created_at": row.created_at,
+        "actor_name": actors[row.user_id].full_name if row.user_id in actors else None,
+        "actor_email": actors[row.user_id].email if row.user_id in actors else None,
+    } for row in rows]
 
 
 @router.get("/composters")
@@ -68,6 +118,16 @@ def composters(db: Session = Depends(get_db), _: User = Depends(require_roles(Ro
 
 @router.post("/composters")
 def create_composter(data: ComposterCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    existing = db.scalar(select(Composter).where(Composter.device_id == data.device_id))
+    if existing:
+        existing.name = data.name
+        existing.latitude = data.latitude
+        existing.longitude = data.longitude
+        existing.radius_m = data.radius_m
+        existing.is_available = False
+        audit(db, actor, "composter", existing.id, "PROVISIONING_RESUMED")
+        db.commit()
+        return {"id": existing.id, "qr_payload": f"compost://composter/{existing.id}", "device_secret": existing.secret}
     device_secret = data.secret or secrets.token_hex(32)
     composter = Composter(**data.model_dump(exclude={"secret"}), secret=device_secret)
     db.add(composter)

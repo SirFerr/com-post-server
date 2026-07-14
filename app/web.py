@@ -159,7 +159,7 @@ def change_composter(
 
 
 @router.post("/equipment/{composter_id}/full-state")
-def change_full_state(request: Request, composter_id: str, needs_emptying: bool = Form(), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def change_full_state(request: Request, composter_id: str, needs_emptying: bool = Form(), from_moderation: bool = Form(False), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     composter = db.get(Composter, composter_id)
     if not composter:
@@ -167,7 +167,7 @@ def change_full_state(request: Request, composter_id: str, needs_emptying: bool 
     composter.needs_emptying = needs_emptying
     audit(db, actor, "composter", composter.id, "FULL_REPORTED" if needs_emptying else "FULL_REPORT_CLEARED")
     db.commit()
-    return RedirectResponse(f"/web/equipment/{composter.id}", 303)
+    return RedirectResponse("/web/moderation" if from_moderation else f"/web/equipment/{composter.id}", 303)
 
 
 @router.get("/users")

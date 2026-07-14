@@ -221,7 +221,7 @@ def pending_reviews(db: Session = Depends(get_db), _: User = Depends(require_rol
     result = []
     for review in reviews:
         session = db.get(AccessSession, review.session_id)
-        result.append({"id": review.id, "session_id": review.session_id, "photo_url": photo_url(review.photo_key), "status": review.status, "ml_status": review.ml_status, "confidence": review.ml_confidence, "ml_violations": json.loads(review.ml_violations), "created_at": review.created_at, "user_name": session.user.full_name or session.user.email, "user_email": session.user.email, "composter_name": session.composter.name})
+        result.append({"id": review.id, "session_id": review.session_id, "photo_url": photo_url(review.photo_key), "status": review.status, "ml_status": review.ml_status, "confidence": review.ml_confidence, "ml_violations": json.loads(review.ml_violations), "created_at": review.created_at, "user_name": session.user.full_name or session.user.email, "user_email": session.user.email, "composter_id": session.composter.id, "composter_name": session.composter.name})
     return result
 
 

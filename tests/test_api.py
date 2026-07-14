@@ -131,6 +131,7 @@ def test_moderation_queue_contains_user_composter_and_time(client):
     rows = client.get("/moderation/reviews", headers=auth(token(client, "moderator@example.com"))).json()
     row = next(item for item in rows if item["id"] == "review-details")
     assert row["user_email"] == "user@example.com"
+    assert row["composter_id"] == "composter-1"
     assert row["composter_name"] == "Test"
     assert row["created_at"]
 
@@ -231,7 +232,16 @@ def test_staff_web_login_and_role_sections(client):
     assert "user-confirm" in user_detail.text
     assert "Баллы, блокировки и роли" in user_detail.text
 
-    assert client.get("/web/moderation").status_code == 200
+    with SessionLocal() as db:
+        session = AccessSession(id="web-review-session", user_id="user-1", composter_id="composter-1")
+        db.add(session)
+        db.flush()
+        db.add(Review(id="web-review", session_id=session.id, photo_key="web-review-photo"))
+        db.commit()
+    moderation = client.get("/web/moderation")
+    assert moderation.status_code == 200
+    assert "NEEDS_MANUAL_REVIEW" not in moderation.text
+    assert "/full-state" in moderation.text
     map_page = client.get("/web/map")
     assert map_page.status_code == 200
     assert "composter-map" in map_page.text

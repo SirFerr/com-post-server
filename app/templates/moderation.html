@@ -109,6 +109,8 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
       drag = {type:'resize', handle, index:selected, start:p, original:{...boxes[selected]}};
     } else if (hit >= 0) {
       selected = hit;
+      drag = {type:'move', index:hit, start:p, original:{...boxes[hit]}};
+      canvas.style.cursor = 'grabbing';
       render();
     } else {
       selected = -1;
@@ -121,7 +123,7 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
     if (!drag) {
       hovered = hitBox(p);
       const handle = hitHandle(p);
-      canvas.style.cursor = handle ? `${handle}-resize` : hovered >= 0 ? 'pointer' : 'crosshair';
+      canvas.style.cursor = handle ? `${handle}-resize` : hovered >= 0 ? 'grab' : 'crosshair';
       positionControls();
       return;
     }
@@ -148,7 +150,7 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
       const p=point(e), b={x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'};
       if (b.width>.01 && b.height>.01) { boxes.push(b); selected=boxes.length-1; }
     }
-    drag=null; render();
+    drag=null; canvas.style.cursor=selected >= 0 ? 'grab' : 'crosshair'; render();
   });
   controls.addEventListener('pointerdown', e => e.stopPropagation());
   controls.querySelector('[data-box-action="delete"]').onclick = () => {

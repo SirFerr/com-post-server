@@ -162,7 +162,10 @@ if(viewStage){
     if(handle){
       drag={type:'resize',handle,index:selected,start:p,original:{...boxes[selected]}};
     }else if(hit>=0){
-      selected=hit;render();
+      selected=hit;
+      drag={type:'move',index:hit,start:p,original:{...boxes[hit]}};
+      canvas.style.cursor='grabbing';
+      render();
     }else{
       selected=-1;drag={type:'draw',start:p};render();
     }
@@ -172,7 +175,7 @@ if(viewStage){
     if(!drag){
       hovered=hitBox(p);
       const handle=hitHandle(p);
-      canvas.style.cursor=handle?`${handle}-resize`:hovered>=0?'pointer':'crosshair';
+      canvas.style.cursor=handle?`${handle}-resize`:hovered>=0?'grab':'crosshair';
       positionControls();
       return;
     }
@@ -199,7 +202,7 @@ if(viewStage){
       const p=point(event),box={x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'};
       if(box.width>.01&&box.height>.01){boxes.push(box);selected=boxes.length-1;}
     }
-    drag=null;render();syncEditor();
+    drag=null;canvas.style.cursor=selected>=0?'grab':'crosshair';render();syncEditor();
   });
   controls.addEventListener('pointerdown',event=>event.stopPropagation());
   controls.querySelector('[data-box-action="delete"]').addEventListener('click',()=>{

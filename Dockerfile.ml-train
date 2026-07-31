@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt requirements-ml-train.txt ./
+RUN pip install --no-cache-dir -r requirements-ml-train.txt
+COPY app app
+COPY tools tools
+ENTRYPOINT ["python", "-m", "tools.ml_pipeline"]

@@ -1,15 +1,17 @@
+import json
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, Telemetry, User, UserScore, Violation
-from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, PasswordConfirmation, TelemetryRequest, UserAdminUpdate
+from .ml_dataset import freeze_dataset_version
+from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, UserScore, Violation
+from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, IncidentCreate, IncidentUpdate, MaintenanceCreate, MaintenanceModeRequest, PasswordConfirmation, ScoreAdjustment, TelemetryRequest, UserAdminUpdate
 from .security import require_roles, signed_command, verify_password
-from .services import audit
+from .services import audit, photo_url, store_photo
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -17,6 +19,32 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 def confirm_password(actor: User, password: str) -> None:
     if not verify_password(password, actor.password_hash):
         raise HTTPException(403, "Password confirmation failed")
+
+
+def history_media(db: Session, row: AuditLog) -> dict:
+    if row.entity == "review":
+        review = db.get(Review, row.entity_id)
+        if review:
+            session = db.get(AccessSession, review.session_id)
+            composter = db.get(Composter, session.composter_id) if session else None
+            return {
+                "photo_url": photo_url(review.photo_key),
+                "annotations": json.loads(review.annotations or "[]"),
+                "composter_id": composter.id if composter else None,
+                "composter_name": composter.name if composter else None,
+            }
+    if row.entity == "composter" and row.action == "CONTAMINATION_REPORTED":
+        details = json.loads(row.details or "{}")
+        incident = db.get(Incident, details.get("incident_id")) if details.get("incident_id") else None
+        composter = db.get(Composter, row.entity_id)
+        if incident and incident.photo_key:
+            return {
+                "photo_url": photo_url(incident.photo_key),
+                "annotations": [],
+                "composter_id": composter.id if composter else None,
+                "composter_name": composter.name if composter else None,
+            }
+    return {"photo_url": None, "annotations": [], "composter_id": None, "composter_name": None}
 
 
 @router.get("/dashboard")
@@ -28,17 +56,105 @@ def dashboard(db: Session = Depends(get_db), _: User = Depends(require_roles(Rol
         "available_composters": db.scalar(select(func.count(Composter.id)).where(Composter.is_available.is_(True))) or 0,
         "sessions": db.scalar(select(func.count(AccessSession.id))) or 0,
         "pending_reviews": db.scalar(select(func.count(Review.id)).where(Review.status == ReviewStatus.PENDING)) or 0,
-        "active_violations": db.scalar(select(func.count(Violation.id)).where(Violation.is_active.is_(True))) or 0,
+        "active_violations": (db.scalar(select(func.count(Violation.id)).where(Violation.is_active.is_(True))) or 0)
+        + (db.scalar(select(func.count(Incident.id)).where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))) or 0),
+        "open_incidents": db.scalar(select(func.count(Incident.id)).where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))) or 0,
     }
 
 
 @router.get("/users")
-def users(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+def users(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
     return [{"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "is_blocked": u.is_blocked, "ban_reason": u.ban_reason, "created_at": u.created_at} for u in db.scalars(select(User).order_by(User.created_at.desc())).all()]
 
 
+@router.get("/violations")
+def violations(active_only: bool = True, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
+    query = select(Violation).order_by(Violation.created_at.desc())
+    if active_only:
+        query = query.where(Violation.is_active.is_(True))
+    rows = list(db.scalars(query).all())
+    actor_ids = {value for row in rows for value in (row.user_id, row.created_by, row.resolved_by) if value}
+    users = {user.id: user for user in db.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    reviews = {review.id: review for review in db.scalars(select(Review).where(Review.id.in_({row.review_id for row in rows}))).all()} if rows else {}
+    sessions = {session.id: session for session in db.scalars(select(AccessSession).where(AccessSession.id.in_({review.session_id for review in reviews.values()}))).all()} if reviews else {}
+    composter_ids = {session.composter_id for session in sessions.values()}
+    composters = {composter.id: composter for composter in db.scalars(select(Composter).where(Composter.id.in_(composter_ids))).all()} if composter_ids else {}
+    result = [{
+        "id": row.id,
+        "kind": "USER_VIOLATION",
+        "user_id": row.user_id,
+        "user_email": users[row.user_id].email if row.user_id in users else "Удалённый пользователь",
+        "review_id": row.review_id,
+        "composter_id": sessions[reviews[row.review_id].session_id].composter_id if row.review_id in reviews and reviews[row.review_id].session_id in sessions else None,
+        "composter_name": composters[sessions[reviews[row.review_id].session_id].composter_id].name if row.review_id in reviews and reviews[row.review_id].session_id in sessions and sessions[reviews[row.review_id].session_id].composter_id in composters else None,
+        "reason": row.reason,
+        "is_active": row.is_active,
+        "created_at": row.created_at,
+        "created_by": row.created_by,
+        "source_name": (users[row.created_by].full_name or users[row.created_by].email) if row.created_by in users else "Система",
+        "resolved_by": row.resolved_by,
+        "resolver_name": (users[row.resolved_by].full_name or users[row.resolved_by].email) if row.resolved_by in users else None,
+        "resolved_at": row.resolved_at,
+        "photo_url": photo_url(reviews[row.review_id].photo_key) if row.review_id in reviews else None,
+        "annotations": json.loads(reviews[row.review_id].annotations or "[]") if row.review_id in reviews else [],
+    } for row in rows]
+    incident_query = select(Incident).order_by(Incident.created_at.desc())
+    if active_only:
+        incident_query = incident_query.where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))
+    incidents = list(db.scalars(incident_query).all())
+    incident_actor_ids = {value for row in incidents for value in (row.created_by, row.resolved_by) if value}
+    incident_users = {user.id: user for user in db.scalars(select(User).where(User.id.in_(incident_actor_ids))).all()} if incident_actor_ids else {}
+    result.extend({
+        "id": row.id,
+        "kind": row.kind,
+        "user_id": None,
+        "user_email": None,
+        "review_id": None,
+        "composter_id": row.composter_id,
+        "reason": row.description or row.title,
+        "is_active": row.status in ("OPEN", "IN_PROGRESS"),
+        "created_at": row.created_at,
+        "created_by": row.created_by,
+        "source_name": (incident_users[row.created_by].full_name or incident_users[row.created_by].email) if row.created_by in incident_users else "Система",
+        "resolved_by": row.resolved_by,
+        "resolver_name": (incident_users[row.resolved_by].full_name or incident_users[row.resolved_by].email) if row.resolved_by in incident_users else None,
+        "resolved_at": row.resolved_at,
+        "photo_url": photo_url(row.photo_key) if row.photo_key else None,
+        "annotations": [],
+    } for row in incidents)
+    return sorted(result, key=lambda item: item["created_at"], reverse=True)
+
+
+@router.post("/violations/{violation_id}/resolve")
+def resolve_violation(violation_id: str, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    violation = db.get(Violation, violation_id)
+    if not violation:
+        incident = db.get(Incident, violation_id)
+        if not incident:
+            raise HTTPException(404, "Violation not found")
+        incident.status = "RESOLVED"
+        incident.resolved_by = actor.id
+        incident.resolved_at = datetime.now(timezone.utc)
+        audit(db, actor, "incident", incident.id, "VIOLATION_RESOLVED", {"composter_id": incident.composter_id})
+        db.commit()
+        return {"status": "resolved"}
+    violation.is_active = False
+    violation.resolved_by = actor.id
+    violation.resolved_at = datetime.now(timezone.utc)
+    db.flush()
+    remaining = db.scalar(select(func.count(Violation.id)).where(Violation.user_id == violation.user_id, Violation.is_active.is_(True))) or 0
+    user = db.get(User, violation.user_id)
+    if user and remaining < 3 and user.ban_reason == "Three active composting violations":
+        user.is_blocked = False
+        user.ban_reason = None
+        user.ban_until = None
+    audit(db, actor, "violation", violation.id, "VIOLATION_RESOLVED", {"remaining": remaining})
+    db.commit()
+    return {"status": "resolved"}
+
+
 @router.get("/users/{user_id}/history")
-def user_history(user_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+def user_history(user_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "User not found")
@@ -60,6 +176,21 @@ def user_history(user_id: str, db: Session = Depends(get_db), _: User = Depends(
         "created_at": row.created_at,
         "actor_name": actors[row.user_id].full_name if row.user_id in actors else None,
         "actor_email": actors[row.user_id].email if row.user_id in actors else None,
+        "actor_id": row.user_id,
+        **history_media(db, row),
+    } for row in rows]
+
+
+@router.get("/users/{user_id}/reviews")
+def user_reviews(user_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
+    rows = db.scalars(select(Review).join(AccessSession, Review.session_id == AccessSession.id).where(AccessSession.user_id == user_id).order_by(Review.created_at.desc())).all()
+    return [{
+        "id": row.id,
+        "status": row.status,
+        "comment": row.comment,
+        "photo_url": photo_url(row.photo_key),
+        "annotations": json.loads(row.annotations or "[]"),
+        "created_at": row.created_at,
     } for row in rows]
 
 
@@ -84,12 +215,222 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
     if data.is_blocked is not None:
         user.is_blocked = data.is_blocked
         user.ban_reason = data.ban_reason if data.is_blocked else None
+        user.ban_until = datetime.fromisoformat(data.ban_until) if data.is_blocked and data.ban_until else None
+    if data.warning_message is not None:
+        user.warning_message = data.warning_message.strip() or None
     if user.role != previous_role:
         audit(db, actor, "user", user.id, "USER_ROLE_CHANGED", {"from": previous_role.value, "to": user.role.value})
     if user.is_blocked != previous_blocked:
         audit(db, actor, "user", user.id, "USER_BLOCKED" if user.is_blocked else "USER_UNBLOCKED", {"reason": user.ban_reason})
     db.commit()
-    return {"id": user.id, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason}
+    return {"id": user.id, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "ban_until": user.ban_until, "warning_message": user.warning_message}
+
+
+@router.post("/users/{user_id}/score")
+def adjust_score(user_id: str, data: ScoreAdjustment, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    confirm_password(actor, data.current_password)
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    score = db.get(UserScore, user_id)
+    if not score:
+        score = UserScore(user_id=user_id, points=0)
+        db.add(score)
+    score.points += data.amount
+    db.flush()
+    db.add(ScoreTransaction(user_id=user_id, amount=data.amount, balance_after=score.points, reason=data.reason, actor_id=actor.id))
+    audit(db, actor, "user", user_id, "SCORE_ADJUSTED", {"amount": data.amount, "reason": data.reason, "balance": score.points})
+    db.commit()
+    return {"points": score.points}
+
+
+@router.get("/users/{user_id}/score-transactions")
+def score_transactions(user_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+    rows = db.scalars(select(ScoreTransaction).where(ScoreTransaction.user_id == user_id).order_by(ScoreTransaction.created_at.desc()).limit(200)).all()
+    return [{"id": row.id, "amount": row.amount, "balance_after": row.balance_after, "reason": row.reason, "actor_id": row.actor_id, "created_at": row.created_at} for row in rows]
+
+
+@router.post("/users/{user_id}/revoke-sessions")
+def revoke_user_sessions(user_id: str, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    rows = db.scalars(select(AuthSession).where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))).all()
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.revoked_at = now
+    audit(db, actor, "user", user_id, "ALL_SESSIONS_REVOKED", {"count": len(rows)})
+    db.commit()
+    return {"revoked": len(rows)}
+
+
+@router.get("/incidents")
+def incidents(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    rows = db.scalars(select(Incident).order_by(Incident.created_at.desc()).limit(500)).all()
+    return [{"id": row.id, "composter_id": row.composter_id, "kind": row.kind, "severity": row.severity, "status": row.status, "title": row.title, "description": row.description, "photo_url": photo_url(row.photo_key) if row.photo_key else None, "assigned_to": row.assigned_to, "due_at": row.due_at, "created_at": row.created_at} for row in rows]
+
+
+@router.post("/incidents")
+def create_incident(data: IncidentCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    if data.composter_id and not db.get(Composter, data.composter_id):
+        raise HTTPException(404, "Composter not found")
+    row = Incident(**data.model_dump(exclude={"due_at"}), due_at=datetime.fromisoformat(data.due_at) if data.due_at else None, created_by=actor.id)
+    db.add(row)
+    db.flush()
+    audit(db, actor, "incident", row.id, "INCIDENT_CREATED", {"severity": row.severity, "kind": row.kind})
+    db.commit()
+    return {"id": row.id, "status": row.status}
+
+
+@router.post("/incidents/report")
+def report_incident(
+    composter_id: str = Form(""),
+    kind: str = Form("CONTAMINATION"),
+    severity: str = Form("MEDIUM"),
+    title: str = Form("Выявлено нарушение"),
+    description: str = Form(""),
+    file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER)),
+):
+    composter = db.get(Composter, composter_id) if composter_id else None
+    if composter_id and not composter:
+        raise HTTPException(404, "Composter not found")
+    kind = kind.strip().upper()
+    severity = severity.strip().upper()
+    title = title.strip()
+    description = description.strip()
+    if len(kind) < 2 or len(kind) > 80 or severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise HTTPException(422, "Invalid incident fields")
+    if len(title) < 3 or len(title) > 255 or len(description) > 5000:
+        raise HTTPException(422, "Invalid incident fields")
+    photo_key = None
+    if file and file.filename:
+        if not (file.content_type or "").startswith("image/"):
+            raise HTTPException(415, "Only images are accepted")
+        photo_key = store_photo(file)
+    row = Incident(
+        composter_id=composter.id if composter else None,
+        kind=kind,
+        severity=severity,
+        title=title,
+        description=description,
+        photo_key=photo_key,
+        created_by=actor.id,
+    )
+    db.add(row)
+    db.flush()
+    audit(db, actor, "incident", row.id, "INCIDENT_CREATED", {
+        "composter_id": row.composter_id,
+        "kind": row.kind,
+        "severity": row.severity,
+        "photo_key": photo_key,
+    })
+    if composter:
+        audit(db, actor, "composter", composter.id, "INCIDENT_CREATED", {"incident_id": row.id, "kind": row.kind})
+    db.commit()
+    return {"id": row.id, "status": row.status, "photo_url": photo_url(photo_key) if photo_key else None}
+
+
+@router.post("/composters/{composter_id}/contamination-report")
+def contamination_report(
+    composter_id: str,
+    comment: str = Form("Выявлено загрязнение"),
+    file: UploadFile = File(),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER)),
+):
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(415, "Only images are accepted")
+    photo_key = store_photo(file)
+    description = comment.strip() or "Выявлено загрязнение"
+    row = Incident(
+        composter_id=composter.id,
+        kind="CONTAMINATION",
+        severity="MEDIUM",
+        title="Выявлено загрязнение",
+        description=description,
+        photo_key=photo_key,
+        created_by=actor.id,
+    )
+    db.add(row)
+    db.flush()
+    audit(db, actor, "incident", row.id, "CONTAMINATION_REPORTED", {"composter_id": composter.id, "photo_key": photo_key})
+    audit(db, actor, "composter", composter.id, "CONTAMINATION_REPORTED", {"incident_id": row.id})
+    db.commit()
+    return {"id": row.id, "status": row.status, "photo_url": photo_url(photo_key)}
+
+
+@router.patch("/incidents/{incident_id}")
+def update_incident(incident_id: str, data: IncidentUpdate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    row = db.get(Incident, incident_id)
+    if not row:
+        raise HTTPException(404, "Incident not found")
+    for key, value in data.model_dump(exclude_none=True).items():
+        setattr(row, key, value)
+    row.resolved_at = datetime.now(timezone.utc) if row.status == "RESOLVED" else None
+    audit(db, actor, "incident", row.id, "INCIDENT_UPDATED", data.model_dump(exclude_none=True))
+    db.commit()
+    return {"id": row.id, "status": row.status}
+
+
+@router.post("/composters/{composter_id}/maintenance-mode")
+def maintenance_mode(composter_id: str, data: MaintenanceModeRequest, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    composter.maintenance_mode = data.enabled
+    if data.enabled:
+        composter.is_available = False
+    audit(db, actor, "composter", composter.id, "MAINTENANCE_MODE_CHANGED", {"enabled": data.enabled})
+    db.commit()
+    return {"maintenance_mode": composter.maintenance_mode}
+
+
+@router.get("/composters/{composter_id}/maintenance")
+def maintenance_history(composter_id: str, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    rows = db.scalars(select(MaintenanceRecord).where(MaintenanceRecord.composter_id == composter_id).order_by(MaintenanceRecord.created_at.desc())).all()
+    return [{"id": row.id, "action": row.action, "notes": row.notes, "photo_key": row.photo_key, "engineer_id": row.engineer_id, "created_at": row.created_at} for row in rows]
+
+
+@router.post("/composters/{composter_id}/maintenance")
+def create_maintenance(composter_id: str, data: MaintenanceCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    if not db.get(Composter, composter_id):
+        raise HTTPException(404, "Composter not found")
+    row = MaintenanceRecord(composter_id=composter_id, engineer_id=actor.id, **data.model_dump())
+    db.add(row)
+    db.flush()
+    audit(db, actor, "composter", composter_id, "MAINTENANCE_RECORDED", {"action": data.action})
+    db.commit()
+    return {"id": row.id}
+
+
+@router.get("/analytics")
+def analytics(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+    reviewed = db.scalar(select(func.count(Review.id)).where(Review.status != ReviewStatus.PENDING)) or 0
+    approved = db.scalar(select(func.count(Review.id)).where(Review.status == ReviewStatus.APPROVED)) or 0
+    avg_seconds = db.scalar(select(func.avg(func.extract("epoch", Review.reviewed_at - Review.created_at))).where(Review.reviewed_at.is_not(None))) if db.bind.dialect.name != "sqlite" else None
+    return {"reviewed": reviewed, "approved": approved, "approval_rate": round(approved / reviewed * 100, 1) if reviewed else 0, "average_review_seconds": float(avg_seconds) if avg_seconds else None, "open_incidents": db.scalar(select(func.count(Incident.id)).where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))) or 0, "storage_samples": db.scalar(select(func.count(Review.id))) or 0}
+
+
+@router.post("/ml/datasets")
+def freeze_dataset(db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    row = freeze_dataset_version(db, actor.id)
+    return {"id": row.id, "version": row.version, "sample_count": row.sample_count, "annotated_count": row.annotated_count}
+
+
+@router.get("/ml/datasets")
+def dataset_versions(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+    rows = db.scalars(select(DatasetVersion).order_by(DatasetVersion.version.desc())).all()
+    return [{"id": row.id, "version": row.version, "status": row.status, "sample_count": row.sample_count, "annotated_count": row.annotated_count, "created_at": row.created_at} for row in rows]
+
+
+@router.get("/ml/datasets/{version}")
+def dataset_manifest(version: int, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN))):
+    row = db.scalar(select(DatasetVersion).where(DatasetVersion.version == version))
+    if not row:
+        raise HTTPException(404, "Dataset version not found")
+    return json.loads(row.manifest)
 
 
 @router.get("/composters/{composter_id}/history")
@@ -108,6 +449,8 @@ def composter_history(composter_id: str, db: Session = Depends(get_db), _: User 
         "created_at": row.created_at,
         "actor_name": actors[row.user_id].full_name if row.user_id in actors else None,
         "actor_email": actors[row.user_id].email if row.user_id in actors else None,
+        "actor_id": row.user_id,
+        **history_media(db, row),
     } for row in rows]
 
 

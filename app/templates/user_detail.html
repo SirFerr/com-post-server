@@ -2,7 +2,63 @@
 {% block title %}{{ user.full_name or user.email }}{% endblock %}
 {% block content %}
 <a class="back" href="/web/users">← Пользователи</a>
-<header class="page-header detail-heading"><div><p class="eyebrow">{{ user.email }}</p><h1>{{ user.full_name or 'Без имени' }}</h1><p class="muted">Аккаунт создан {{ user.created_at }}</p></div><span class="status {{ 'off' if user.is_blocked else 'ok' }}">{{ 'Заблокирован' if user.is_blocked else 'Активен' }}</span></header>
-<section class="panel action-panel"><h2>Доступ и роль</h2><form id="user-form" method="post" action="/web/users/{{ user.id }}" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Роль<select name="role">{% for role in roles %}<option value="{{ role.value }}" {% if user.role == role %}selected{% endif %}>{{ role.value }}</option>{% endfor %}</select></label><label class="check"><input name="blocked" type="checkbox" value="true" {% if user.is_blocked %}checked{% endif %}> Аккаунт заблокирован</label><label class="wide">Причина блокировки<input name="ban_reason" value="{{ user.ban_reason or '' }}" placeholder="Укажите причину, если блокируете аккаунт"></label><button type="button" onclick="document.getElementById('user-confirm').showModal()">Сохранить изменения</button><dialog id="user-confirm" class="confirm-dialog"><h2>Подтвердите изменения</h2><p>Введите пароль администратора. Роль и блокировка изменятся после подтверждения.</p><label>Пароль администратора<input name="current_password" type="password" minlength="8" required autocomplete="current-password"></label><div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Подтвердить</button></div></dialog></form></section>
-<section class="history"><p class="eyebrow">ИСТОРИЯ</p><h2>Баллы, блокировки и роли</h2>{% for item in history %}<article><span></span><div><strong>{{ item.row.action.replace('_',' ') }}</strong><p>{{ item.actor.full_name or item.actor.email if item.actor else 'Система' }}</p><small>{{ item.row.created_at }}</small></div></article>{% else %}<div class="empty">История пока пуста.</div>{% endfor %}</section>
+<header class="page-header user-header">
+  <div><p class="eyebrow">{{ user.email }}</p><h1>{{ user.full_name or 'Без имени' }}</h1><p class="muted">Аккаунт создан {{ user.created_at.strftime('%d.%m.%Y') }}</p></div>
+  <span class="status {{ 'off' if user.is_blocked else 'ok' }}">{{ 'Заблокирован' if user.is_blocked else 'Активен' }}</span>
+</header>
+{% if error %}<div class="alert page-alert">{{ error }}</div>{% endif %}
+
+<section class="user-summary">
+  <article><small>Роль</small><strong>{{ user.role.value }}</strong></article>
+  <article><small>Баланс</small><strong>{{ score.points if score else 0 }}</strong></article>
+  <article><small>Проверок</small><strong>{{ reviews|length }}</strong></article>
+</section>
+
+{% if actor.role.value == 'ADMIN' %}
+<details class="panel compact-details">
+  <summary><span><small>УПРАВЛЕНИЕ</small><strong>Доступ, роль и блокировка</strong></span><span>Изменить</span></summary>
+  <form id="user-form" method="post" action="/web/users/{{ user.id }}" class="form-grid details-body">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Роль<select name="role">{% for role in roles %}<option value="{{ role.value }}" {% if user.role == role %}selected{% endif %}>{{ role.value }}</option>{% endfor %}</select></label>
+    <label class="check"><input name="blocked" type="checkbox" value="true" {% if user.is_blocked %}checked{% endif %}> Аккаунт заблокирован</label>
+    <label>Заблокирован до<input name="ban_until" type="datetime-local" value="{{ user.ban_until.strftime('%Y-%m-%dT%H:%M') if user.ban_until else '' }}"></label>
+    <label class="wide">Причина<input name="ban_reason" value="{{ user.ban_reason or '' }}" placeholder="Укажите причину"></label>
+    <button type="button" onclick="document.getElementById('user-confirm').showModal()">Сохранить</button>
+    <dialog id="user-confirm" class="confirm-dialog">
+      <h2>Подтвердите изменения</h2><p>Введите пароль администратора.</p>
+      <label>Пароль<input name="current_password" type="password" minlength="8" required autocomplete="current-password"></label>
+      <div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Подтвердить</button></div>
+    </dialog>
+  </form>
+</details>
+<details class="panel compact-details">
+  <summary><span><small>БАЛАНС</small><strong>Начислить или списать баллы</strong></span><span>Операция</span></summary>
+  <form method="post" action="/web/users/{{ user.id }}/score" class="form-grid details-body">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Изменение<input type="number" name="amount" min="-10000" max="10000" required></label>
+    <label>Причина<input name="reason" minlength="3" required></label>
+    <label>Пароль администратора<input name="current_password" type="password" minlength="8" required></label>
+    <button>Провести операцию</button>
+  </form>
+</details>
+{% endif %}
+
+<section class="history user-history">
+  <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Действия, проверки и фотографии</h2></div><span class="status">{{ history|length }}</span></div>
+  {% for item in history %}
+  <article class="clickable-card" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+    <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
+    <div class="history-meta">
+      {% if item.score %}<span class="score-change {{ 'positive' if item.score.amount > 0 else 'negative' }}"><strong>{{ '+' if item.score.amount > 0 else '' }}{{ item.score.amount }}</strong> → {{ item.score.balance_after }}</span>{% endif %}
+      <span>{% if item.actor %}<a href="/web/users/{{ item.actor.id }}">{{ item.actor.full_name or item.actor.email }}</a>{% else %}Система{% endif %}{% if item.composter %} · <a href="/web/equipment/{{ item.composter.id }}">{{ item.composter.name }}</a>{% endif %}</span>
+      {% set history_id = item.row.id if item.row else item.score.id %}
+      {% if item.photo_url %}<button type="button" class="history-photo-link" onclick="document.getElementById('history-photo-{{ history_id }}').showModal()">Фото</button>{% endif %}
+    </div>
+  </div></article>
+  {% if item.photo_url %}<dialog id="history-photo-{{ history_id }}" class="photo-dialog"><div class="annotation-stage history-stage" data-boxes='{{ item.annotations|tojson }}'><img src="{{ item.photo_url }}" alt="Фото проверки"><canvas></canvas></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></dialog>{% endif %}
+  {% else %}<div class="empty">История пока пуста.</div>{% endfor %}
+</section>
 {% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('.history-stage').forEach(stage=>{const c=stage.querySelector('canvas'),img=stage.querySelector('img'),boxes=JSON.parse(stage.dataset.boxes||'[]');function draw(){const stageRect=stage.getBoundingClientRect(),imageRect=img.getBoundingClientRect(),w=Math.round(imageRect.width),h=Math.round(imageRect.height);if(!w||!h)return;c.style.inset='auto';c.style.left=`${imageRect.left-stageRect.left}px`;c.style.top=`${imageRect.top-stageRect.top}px`;c.style.width=`${w}px`;c.style.height=`${h}px`;c.width=w;c.height=h;const x=c.getContext('2d');x.clearRect(0,0,w,h);x.strokeStyle='#ff3b30';x.lineWidth=3;boxes.forEach(b=>x.strokeRect(b.x*w,b.y*h,b.width*w,b.height*h));}img.addEventListener('load',draw);new ResizeObserver(draw).observe(stage);});
+</script>{% endblock %}

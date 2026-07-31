@@ -43,6 +43,8 @@ class User(Base):
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.USER)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     ban_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ban_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    warning_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -56,6 +58,7 @@ class Composter(Base):
     radius_m: Mapped[float] = mapped_column(Float, default=100)
     secret: Mapped[str] = mapped_column(String(128))
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
+    maintenance_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     needs_emptying: Mapped[bool] = mapped_column(Boolean, default=False)
     fill_level: Mapped[int] = mapped_column(Integer, default=0)
     battery_level: Mapped[int] = mapped_column(Integer, default=100)
@@ -95,10 +98,20 @@ class Review(Base):
     ml_status: Mapped[str] = mapped_column(String(40), default="NEEDS_MANUAL_REVIEW")
     ml_confidence: Mapped[float] = mapped_column(Float, default=0)
     ml_violations: Mapped[str] = mapped_column(Text, default="[]")
+    annotations: Mapped[str] = mapped_column(Text, default="[]")
     violation_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StorageObjectAnnotation(Base):
+    __tablename__ = "storage_object_annotations"
+    object_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    annotations: Mapped[str] = mapped_column(Text, default="[]")
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class Violation(Base):
@@ -109,6 +122,9 @@ class Violation(Base):
     review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"))
     reason: Mapped[str] = mapped_column(String(120))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -118,6 +134,87 @@ class UserScore(Base):
     points: Mapped[int] = mapped_column(Integer, default=0)
     total_uploads: Mapped[int] = mapped_column(Integer, default=0)
     valid_uploads: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ScoreTransaction(Base):
+    __tablename__ = "score_transactions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    balance_after: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(255))
+    review_id: Mapped[str | None] = mapped_column(ForeignKey("reviews.id"), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(255), default="Unknown device")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    composter_id: Mapped[str | None] = mapped_column(ForeignKey("composters.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(80))
+    severity: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    photo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    assigned_to: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MaintenanceRecord(Base):
+    __tablename__ = "maintenance_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    composter_id: Mapped[str] = mapped_column(ForeignKey("composters.id"), index=True)
+    engineer_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(120))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    photo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DatasetVersion(Base):
+    __tablename__ = "dataset_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    version: Mapped[int] = mapped_column(Integer, unique=True)
+    status: Mapped[str] = mapped_column(String(20), default="FROZEN")
+    sample_count: Mapped[int] = mapped_column(Integer)
+    annotated_count: Mapped[int] = mapped_column(Integer)
+    manifest: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ModelTrainingRun(Base):
+    __tablename__ = "ml_training_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    dataset_version: Mapped[int] = mapped_column(ForeignKey("dataset_versions.version"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    metrics: Mapped[str] = mapped_column(Text, default="{}")
+    artifact_prefix: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    deployed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Telemetry(Base):
@@ -134,7 +231,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     entity: Mapped[str] = mapped_column(String(50))
-    entity_id: Mapped[str] = mapped_column(String(36))
+    entity_id: Mapped[str] = mapped_column(String(512))
     action: Mapped[str] = mapped_column(String(80))
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     details: Mapped[str] = mapped_column(Text, default="{}")

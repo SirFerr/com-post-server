@@ -6,8 +6,9 @@
   <a href="/web/equipment?status=ACTIVE"><small>Компостеры онлайн</small><strong>{{ stats.available_composters }} / {{ stats.composters }}</strong></a>
   {% if actor.role.value in ['ADMIN','MODERATOR'] %}<a href="/web/moderation"><small>Ожидают проверки</small><strong>{{ stats.pending_reviews }}</strong></a>{% endif %}
   {% if actor.role.value == 'ADMIN' %}<a href="/web/users"><small>Пользователи</small><strong>{{ stats.users }}</strong></a><a href="/web/users?status=BLOCKED"><small>Заблокированы</small><strong>{{ stats.blocked_users }}</strong></a>{% endif %}
-  <a href="/web/equipment?status=FULL"><small>Нужно освободить</small><strong>{{ stats.full_composters }}</strong><span>Открыть список</span></a>
-  <article><small>Активные нарушения</small><strong>{{ stats.active_violations }}</strong></article>
+  <a href="/web/equipment?status=FULL"><small>Нужно освободить</small><strong>{{ stats.full_composters }}</strong></a>
+  <a href="/web/equipment?status=LOW_BATTERY"><small>Батарея ≤ 20%</small><strong>{{ stats.low_battery_composters }}</strong></a>
+  {% if actor.role.value in ['ADMIN','ENGINEER'] %}<a href="/web/violations"><small>Активные нарушения</small><strong>{{ stats.active_violations }}</strong></a>{% endif %}
 </section>
 <section class="quick-grid">
   <a class="feature-card" href="/web/equipment"><span>ESP32</span><h2>Оборудование</h2><p>Состояние, настройки и история каждого компостера</p></a>

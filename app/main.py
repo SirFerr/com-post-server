@@ -3,17 +3,17 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .admin import router as admin_router
-from .database import Base, engine, get_db
-from .models import AccessSession, AuditLog, Composter, DeviceCommand, Review, ReviewStatus, Role, SessionStatus, User, UserScore, Violation
-from .schemas import AccessRequest, ChangePasswordRequest, CommandAck, LoginRequest, ModerateRequest, PasswordConfirmation, RegisterRequest
-from .security import create_token, current_user, hash_password, require_roles, signed_command, verify_password
+from .database import Base, engine, get_db, migrate_schema
+from .models import AccessSession, AuditLog, AuthSession, Composter, DeviceCommand, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, User, UserScore, Violation
+from .schemas import AccessRequest, ChangePasswordRequest, CommandAck, LoginRequest, ModerateRequest, PasswordConfirmation, RefreshRequest, RegisterRequest
+from .security import create_auth_session, create_token, current_user, hash_password, require_roles, rotate_refresh_token, signed_command, verify_password
 from .services import apply_violation, audit, distance_m, photo_url, request_ml_review, reward_review, store_photo
 from .web import router as web_router
 
@@ -21,6 +21,7 @@ from .web import router as web_router
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
+    migrate_schema()
     yield
 
 
@@ -28,6 +29,16 @@ app = FastAPI(title="Community Compost API", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(web_router)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401 and request.url.path.startswith("/web"):
+        response = RedirectResponse(f"/web/login?next={request.url.path}", status_code=303)
+        response.delete_cookie("compost_session")
+        response.delete_cookie("compost_csrf")
+        return response
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
 
 @app.get("/", include_in_schema=False)
@@ -45,7 +56,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == data.email.lower()))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
-    return {"access_token": create_token(user), "token_type": "bearer", "role": user.role}
+    access_token, refresh_token = create_auth_session(user, db, data.device_name)
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "role": user.role}
 
 
 @app.post("/auth/register", status_code=201)
@@ -58,7 +70,30 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.flush()
     audit(db, user, "user", user.id, "USER_REGISTERED")
     db.commit()
-    return {"access_token": create_token(user), "token_type": "bearer", "role": user.role}
+    access_token, refresh_token = create_auth_session(user, db, data.email)
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "role": user.role}
+
+
+@app.post("/auth/refresh")
+def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
+    user, access_token, refresh_token = rotate_refresh_token(data.refresh_token, db)
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "role": user.role}
+
+
+@app.get("/profile/sessions")
+def auth_sessions(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    rows = db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None)).order_by(AuthSession.last_used_at.desc())).all()
+    return [{"id": row.id, "device_name": row.device_name, "created_at": row.created_at, "last_used_at": row.last_used_at, "expires_at": row.expires_at} for row in rows]
+
+
+@app.delete("/profile/sessions/{session_id}")
+def revoke_auth_session(session_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    row = db.get(AuthSession, session_id)
+    if not row or row.user_id != user.id:
+        raise HTTPException(404, "Session not found")
+    row.revoked_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "revoked"}
 
 
 @app.get("/composters")
@@ -66,8 +101,28 @@ def composters(db: Session = Depends(get_db), _: User = Depends(current_user)):
     return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "is_available": c.is_available, "needs_emptying": c.needs_emptying, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
 
 
+def refresh_expired_ban(user: User, db: Session) -> None:
+    if user.is_blocked and user.ban_until:
+        ban_until = user.ban_until
+        if ban_until.tzinfo is None:
+            ban_until = ban_until.replace(tzinfo=timezone.utc)
+        if ban_until <= datetime.now(timezone.utc):
+            user.is_blocked = False
+            user.ban_reason = None
+            user.ban_until = None
+            audit(db, None, "user", user.id, "USER_BAN_EXPIRED")
+            db.commit()
+
+
+def require_container_access(user: User, db: Session) -> None:
+    refresh_expired_ban(user, db)
+    if user.is_blocked:
+        raise HTTPException(403, "User is blocked")
+
+
 @app.get("/composters/resolve-qr/{composter_id}")
-def resolve_qr(composter_id: str, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def resolve_qr(composter_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_container_access(user, db)
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Unknown composter QR code")
@@ -76,6 +131,7 @@ def resolve_qr(composter_id: str, db: Session = Depends(get_db), _: User = Depen
 
 @app.post("/composters/{composter_id}/report-full")
 def report_full(composter_id: str, db: Session = Depends(get_db), actor: User = Depends(current_user)):
+    require_container_access(actor, db)
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Composter not found")
@@ -87,8 +143,7 @@ def report_full(composter_id: str, db: Session = Depends(get_db), actor: User = 
 
 @app.post("/composters/{composter_id}/access")
 def request_access(composter_id: str, data: AccessRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    if user.is_blocked:
-        raise HTTPException(403, "User is blocked")
+    require_container_access(user, db)
     composter = db.get(Composter, composter_id)
     if not composter or not composter.is_available:
         raise HTTPException(409, "Composter unavailable")
@@ -165,6 +220,7 @@ def acknowledge(session_id: str, data: CommandAck, db: Session = Depends(get_db)
 
 @app.post("/sessions/{session_id}/photo")
 def upload_photo(session_id: str, file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_container_access(user, db)
     session = db.get(AccessSession, session_id)
     if not session or session.user_id != user.id or session.status != SessionStatus.OPENED:
         raise HTTPException(409, "Session is not ready for a photo")
@@ -204,6 +260,7 @@ def active_session(db: Session = Depends(get_db), user: User = Depends(current_u
 
 @app.post("/sessions/{session_id}/retry-close")
 def retry_close(session_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_container_access(user, db)
     session = db.get(AccessSession, session_id)
     if not session or session.user_id != user.id:
         raise HTTPException(404, "Session not found")
@@ -221,7 +278,7 @@ def pending_reviews(db: Session = Depends(get_db), _: User = Depends(require_rol
     result = []
     for review in reviews:
         session = db.get(AccessSession, review.session_id)
-        result.append({"id": review.id, "session_id": review.session_id, "photo_url": photo_url(review.photo_key), "status": review.status, "ml_status": review.ml_status, "confidence": review.ml_confidence, "ml_violations": json.loads(review.ml_violations), "created_at": review.created_at, "user_name": session.user.full_name or session.user.email, "user_email": session.user.email, "composter_id": session.composter.id, "composter_name": session.composter.name})
+        result.append({"id": review.id, "session_id": review.session_id, "photo_url": photo_url(review.photo_key), "status": review.status, "ml_status": review.ml_status, "confidence": review.ml_confidence, "ml_violations": json.loads(review.ml_violations), "annotations": json.loads(review.annotations or "[]"), "created_at": review.created_at, "user_name": session.user.full_name or session.user.email, "user_email": session.user.email, "composter_id": session.composter.id, "composter_name": session.composter.name})
     return result
 
 
@@ -233,8 +290,11 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
     if review.status != ReviewStatus.PENDING:
         return {"status": review.status}
     review.status = ReviewStatus.APPROVED if data.approved else ReviewStatus.REJECTED
-    review.comment = data.comment
+    comment = (data.comment or "").strip()
+    review.comment = comment or (None if data.approved else "Обнаружено нарушение")
+    review.annotations = json.dumps(data.annotations, ensure_ascii=False)
     review.reviewed_by = moderator.id
+    review.reviewed_at = datetime.now(timezone.utc)
     session = db.get(AccessSession, review.session_id)
     user = db.get(User, session.user_id)
     was_blocked = user.is_blocked
@@ -269,13 +329,15 @@ def cancel_violation(violation_id: str, db: Session = Depends(get_db), moderator
 @app.get("/profile/score")
 def score(db: Session = Depends(get_db), user: User = Depends(current_user)):
     value = db.get(UserScore, user.id)
-    return {"points": value.points if value else 0, "total_uploads": value.total_uploads if value else 0, "valid_uploads": value.valid_uploads if value else 0}
+    transactions = db.scalars(select(ScoreTransaction).where(ScoreTransaction.user_id == user.id).order_by(ScoreTransaction.created_at.desc()).limit(50)).all()
+    return {"points": value.points if value else 0, "total_uploads": value.total_uploads if value else 0, "valid_uploads": value.valid_uploads if value else 0, "transactions": [{"id": row.id, "amount": row.amount, "balance_after": row.balance_after, "reason": row.reason, "created_at": row.created_at} for row in transactions]}
 
 
 @app.get("/profile")
 def profile(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    refresh_expired_ban(user, db)
     active_violations = db.scalar(select(func.count(Violation.id)).where(Violation.user_id == user.id, Violation.is_active.is_(True))) or 0
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "active_violations": active_violations, "created_at": user.created_at}
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "ban_until": user.ban_until, "active_violations": active_violations, "created_at": user.created_at}
 
 
 @app.post("/profile/change-password")
@@ -321,5 +383,8 @@ def deposit_history(db: Session = Depends(get_db), user: User = Depends(current_
     result = []
     for session in sessions:
         review = db.scalar(select(Review).where(Review.session_id == session.id))
-        result.append({"id": session.id, "composter_name": session.composter.name, "status": session.status, "created_at": session.created_at, "closed_at": session.closed_at, "review_status": review.status if review else None, "ml_status": review.ml_status if review else None, "moderator_comment": review.comment if review else None})
+        moderator_comment = None
+        if review:
+            moderator_comment = review.comment or ("Обнаружено нарушение" if review.status == ReviewStatus.REJECTED else None)
+        result.append({"id": session.id, "composter_name": session.composter.name, "status": session.status, "created_at": session.created_at, "closed_at": session.closed_at, "review_status": review.status if review else None, "ml_status": review.ml_status if review else None, "moderator_comment": moderator_comment, "photo_url": photo_url(review.photo_key) if review else None, "annotations": json.loads(review.annotations or "[]") if review else [], "violation_reason": review.violation_reason if review else None, "reviewed_at": review.reviewed_at if review else None})
     return result

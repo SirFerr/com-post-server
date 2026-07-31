@@ -1,15 +1,28 @@
 {% extends "base.html" %}
 {% block title %}{{ composter.name }}{% endblock %}
 {% block content %}
-<a class="back" href="/web/equipment">← Оборудование</a>
+<a class="back" href="/web/equipment">← Оборудование</a> <a class="back" href="/web/map?focus={{ composter.id }}">Показать на карте</a>
 <header class="page-header detail-heading"><div><p class="eyebrow">{{ composter.device_id }}</p><h1>{{ composter.name }}</h1><p class="muted">{{ composter.latitude }}, {{ composter.longitude }}</p></div><span class="status {{ 'ok' if composter.is_available else 'off' }}">{{ 'Активен' if composter.is_available else 'Отключён' }}</span></header>
+{% if error %}<div class="alert page-alert">{{ error }}</div>{% endif %}
 <div class="detail-grid">
   <section class="panel"><h2>Состояние</h2><div class="facts"><div><small>Батарея</small><strong>{{ composter.battery_level }}%</strong></div><div><small>Замок</small><strong>{{ composter.lock_state }}</strong></div><div><small>Бак</small><strong>{{ 'Заполнен' if composter.needs_emptying else 'Не заполнен' }}</strong></div><div><small>Последний сигнал</small><strong>{{ composter.last_seen_at or 'Ещё нет' }}</strong></div></div></section>
   <section class="panel"><h2>Заполненность</h2><div class="row-actions">
-    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if composter.needs_emptying }}" onclick="return confirm('Отметить бак заполненным?')">Заполнен</button></form>
-    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not composter.needs_emptying }}" onclick="return confirm('Отметить бак не заполненным?')">Не заполнен</button></form>
+    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if composter.needs_emptying }}">Заполнен</button></form>
+    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not composter.needs_emptying }}">Не заполнен</button></form>
   </div></section>
 </div>
 {% if actor.role.value in ['ADMIN','ENGINEER'] %}<section class="panel action-panel"><h2>Настройки оборудования</h2><form id="equipment-form" method="post" action="/web/equipment/{{ composter.id }}" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Название<input name="name" value="{{ composter.name }}" required></label><label>Широта<input name="latitude" type="number" step="any" value="{{ composter.latitude }}" required></label><label>Долгота<input name="longitude" type="number" step="any" value="{{ composter.longitude }}" required></label><label class="check"><input name="available" type="checkbox" value="true" {% if composter.is_available %}checked{% endif %}> Компостер включён</label><button type="button" onclick="document.getElementById('equipment-confirm').showModal()">Сохранить изменения</button><dialog id="equipment-confirm" class="confirm-dialog"><h2>Подтвердите изменения</h2><p>Введите пароль текущего аккаунта. Настройки применятся после подтверждения.</p><label>Пароль аккаунта<input name="current_password" type="password" minlength="8" required autocomplete="current-password"></label><div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Подтвердить</button></div></dialog></form></section>{% endif %}
-<section class="history"><p class="eyebrow">ИСТОРИЯ</p><h2>Действия с оборудованием</h2>{% for item in history %}<article><span></span><div><strong>{{ item.row.action.replace('_',' ') }}</strong><p>{{ item.actor.full_name or item.actor.email if item.actor else 'Система' }}</p><small>{{ item.row.created_at }}</small></div></article>{% else %}<div class="empty">История пока пуста.</div>{% endfor %}</section>
+<section class="history user-history composter-history">
+  <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Действия и фотографии оборудования</h2></div><span class="status">{{ history|length }}</span></div>
+  {% for item in history %}
+  <article class="clickable-card" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+    <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
+    <div class="history-meta"><span>{% if item.actor %}<a href="/web/users/{{ item.actor.id }}">{{ item.actor.full_name or item.actor.email }}</a>{% else %}Система{% endif %}</span>{% if item.photo_url %}<button type="button" class="history-photo-link" onclick="document.getElementById('equipment-photo-{{ item.row.id }}').showModal()">Фото</button>{% endif %}</div>
+  </div></article>
+  {% if item.photo_url %}<dialog id="equipment-photo-{{ item.row.id }}" class="photo-dialog"><div class="annotation-stage history-stage" data-boxes='{{ item.annotations|tojson }}'><img src="{{ item.photo_url }}" alt="Фото оборудования"><canvas></canvas></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></dialog>{% endif %}
+  {% else %}<div class="empty">История пока пуста.</div>{% endfor %}
+</section>
 {% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('.history-stage').forEach(stage=>{const c=stage.querySelector('canvas'),img=stage.querySelector('img'),boxes=JSON.parse(stage.dataset.boxes||'[]');function draw(){const r=img.getBoundingClientRect();if(!r.width||!r.height)return;c.width=Math.round(r.width);c.height=Math.round(r.height);const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#ff3b30';x.lineWidth=3;boxes.forEach(b=>x.strokeRect(b.x*c.width,b.y*c.height,b.width*c.width,b.height*c.height));}img.addEventListener('load',draw);new ResizeObserver(draw).observe(stage);});
+</script>{% endblock %}

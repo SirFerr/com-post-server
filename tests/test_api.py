@@ -1,13 +1,20 @@
+import io
+import json
 import jwt
 
+from app import web
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AccessSession, DeviceCommand, Review, SessionStatus, User
+from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, SessionStatus, StorageObjectAnnotation, User
 from tests.conftest import token
 
 
 def auth(value):
     return {"Authorization": f"Bearer {value}"}
+
+
+def test_audit_entity_id_accepts_storage_keys():
+    assert AuditLog.__table__.c.entity_id.type.length == 512
 
 
 def test_health_and_login(client):
@@ -26,6 +33,13 @@ def test_expired_and_invalid_tokens_have_distinct_errors(client):
     assert expired_response.json()["detail"] == "Access token expired"
     assert invalid_response.status_code == 401
     assert invalid_response.json()["detail"] == "Invalid access token"
+
+
+def test_expired_web_session_redirects_to_login(client):
+    expired = jwt.encode({"sub": "admin-1", "exp": 1}, get_settings().jwt_secret, algorithm="HS256")
+    response = client.get("/web/dashboard", cookies={"compost_session": expired}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/web/login")
 
 
 def test_register_profile_and_empty_history(client):
@@ -119,6 +133,11 @@ def test_third_violation_blocks_user(client):
         assert response.status_code == 200
     with SessionLocal() as db:
         assert db.get(User, "user-1").is_blocked is True
+        assert db.get(Review, "review-0").comment == "Обнаружено нарушение"
+    history = client.get("/admin/users/user-1/history", headers=moderator).json()
+    photo_events = [row for row in history if row["photo_url"]]
+    assert len(photo_events) == 3
+    assert all(row["composter_id"] == "composter-1" for row in photo_events)
 
 
 def test_moderation_queue_contains_user_composter_and_time(client):
@@ -138,6 +157,24 @@ def test_moderation_queue_contains_user_composter_and_time(client):
 
 def test_user_cannot_open_moderation_queue(client):
     assert client.get("/moderation/reviews", headers=auth(token(client))).status_code == 403
+
+
+def test_blocked_user_can_manage_account_but_cannot_use_composters(client):
+    headers = auth(token(client))
+    with SessionLocal() as db:
+        user = db.get(User, "user-1")
+        user.is_blocked = True
+        user.ban_reason = "Тестовая блокировка"
+        db.commit()
+    profile = client.get("/profile", headers=headers)
+    assert profile.status_code == 200
+    assert profile.json()["is_blocked"] is True
+    assert profile.json()["ban_reason"] == "Тестовая блокировка"
+    assert client.get("/profile/sessions", headers=headers).status_code == 200
+    assert client.get("/profile/deposits", headers=headers).status_code == 200
+    assert client.get("/composters/resolve-qr/composter-1", headers=headers).status_code == 403
+    assert client.post("/composters/composter-1/report-full", headers=headers).status_code == 403
+    assert client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=headers).status_code == 403
 
 
 def test_admin_dashboard_and_user_blocking(client):
@@ -209,7 +246,7 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "/static/admin.css?v=4" in page.text
+    assert "/static/admin.css?v=21" in page.text
     assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
     assert "Последние действия" not in page.text
@@ -221,7 +258,7 @@ def test_staff_web_login_and_role_sections(client):
     equipment_detail = client.get("/web/equipment/composter-1")
     assert equipment_detail.status_code == 200
     assert "equipment-confirm" in equipment_detail.text
-    assert "Действия с оборудованием" in equipment_detail.text
+    assert "Действия и фотографии оборудования" in equipment_detail.text
 
     users = client.get("/web/users")
     assert users.status_code == 200
@@ -230,7 +267,15 @@ def test_staff_web_login_and_role_sections(client):
     user_detail = client.get("/web/users/user-1")
     assert user_detail.status_code == 200
     assert "user-confirm" in user_detail.text
-    assert "Баллы, блокировки и роли" in user_detail.text
+    assert "Действия, проверки и фотографии" in user_detail.text
+    assert "Сессии компостирования" not in user_detail.text
+    with SessionLocal() as db:
+        db.add(AuditLog(entity="composter", entity_id="composter-1", action="COMPOSTER_UPDATED", user_id="admin-1"))
+        db.commit()
+    admin_detail = client.get("/web/users/admin-1")
+    assert admin_detail.status_code == 200
+    assert "Настройки компостера изменены" in admin_detail.text
+    assert "Сессии компостирования" not in admin_detail.text
 
     with SessionLocal() as db:
         session = AccessSession(id="web-review-session", user_id="user-1", composter_id="composter-1")
@@ -248,6 +293,10 @@ def test_staff_web_login_and_role_sections(client):
     assert "/static/vendor/leaflet.css?v=1" in map_page.text
     assert "/static/vendor/leaflet.js?v=1" in map_page.text
     assert client.get("/static/vendor/leaflet.js").status_code == 200
+    flasher = client.get("/web/flasher")
+    assert flasher.status_code == 200
+    assert "/static/vendor/esptool-js.js" in flasher.text
+    assert client.get("/static/vendor/esptool-js.js").status_code == 200
 
 
 def test_regular_user_cannot_open_staff_web(client):
@@ -306,3 +355,123 @@ def test_android_equipment_history_contains_access_and_full_report(client):
     history = client.get("/admin/composters/composter-1/history", headers=admin_headers)
     assert history.status_code == 200
     assert {row["action"] for row in history.json()} >= {"FULL_REPORTED", "OPEN_REQUESTED"}
+
+
+def test_refresh_tokens_rotate_and_sessions_can_be_revoked(client):
+    login = client.post("/auth/login", json={"email": "user@example.com", "password": "Password1!", "device_name": "Pixel test"})
+    assert login.status_code == 200
+    refresh_token = login.json()["refresh_token"]
+    rotated = client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert rotated.status_code == 200
+    assert rotated.json()["refresh_token"] != refresh_token
+    assert client.post("/auth/refresh", json={"refresh_token": refresh_token}).status_code == 401
+    headers = auth(rotated.json()["access_token"])
+    sessions = client.get("/profile/sessions", headers=headers).json()
+    assert any(row["device_name"] == "Pixel test" for row in sessions)
+    assert client.delete(f"/profile/sessions/{sessions[0]['id']}", headers=headers).status_code == 200
+
+
+def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
+    admin = auth(token(client, "admin@example.com"))
+    engineer = auth(token(client, "engineer@example.com"))
+    incident = client.post("/admin/incidents", json={"composter_id": "composter-1", "kind": "LOCK", "severity": "HIGH", "title": "Замок не отвечает"}, headers=engineer)
+    assert incident.status_code == 200
+    incident_id = incident.json()["id"]
+    assert client.patch(f"/admin/incidents/{incident_id}", json={"status": "RESOLVED"}, headers=engineer).json()["status"] == "RESOLVED"
+    contamination = client.post(
+        "/admin/composters/composter-1/contamination-report",
+        data={"comment": "Пластик в контейнере"},
+        files={"file": ("contamination.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
+        headers=engineer,
+    )
+    assert contamination.status_code == 200
+    assert contamination.json()["photo_url"]
+    equipment_history = client.get("/admin/composters/composter-1/history", headers=engineer).json()
+    contamination_event = next(row for row in equipment_history if row["action"] == "CONTAMINATION_REPORTED")
+    assert contamination_event["photo_url"]
+    active = client.get("/admin/violations", headers=engineer).json()
+    reported = next(row for row in active if row["id"] == contamination.json()["id"])
+    assert reported["kind"] == "CONTAMINATION"
+    assert reported["source_name"] == "engineer@example.com"
+    assert reported["photo_url"]
+    manual = client.post(
+        "/admin/incidents/report",
+        data={"composter_id": "composter-1", "kind": "DEVICE", "severity": "HIGH", "title": "Ручной инцидент", "description": "Создан из формы"},
+        files={"file": ("manual.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
+        headers=engineer,
+    )
+    assert manual.status_code == 200
+    assert manual.json()["photo_url"]
+    assert client.post(f"/admin/violations/{reported['id']}/resolve", headers=engineer).status_code == 200
+    history = client.get("/admin/violations?active_only=false", headers=engineer).json()
+    resolved = next(row for row in history if row["id"] == reported["id"])
+    assert resolved["is_active"] is False
+    assert resolved["resolved_by"] == "engineer-1"
+    assert client.post("/admin/composters/composter-1/maintenance-mode", json={"enabled": True}, headers=engineer).status_code == 200
+    assert client.post("/admin/composters/composter-1/maintenance", json={"action": "LOCK_REPLACED", "notes": "Проверено"}, headers=engineer).status_code == 200
+    adjusted = client.post("/admin/users/user-1/score", json={"current_password": "Password1!", "amount": 25, "reason": "Компенсация"}, headers=admin)
+    assert adjusted.json()["points"] == 25
+    assert client.get("/admin/users/user-1/score-transactions", headers=admin).json()[0]["amount"] == 25
+    dataset = client.post("/admin/ml/datasets", headers=admin)
+    assert dataset.status_code == 200
+    assert dataset.json()["version"] == 1
+    manifest = client.get("/admin/ml/datasets/1", headers=admin)
+    assert manifest.status_code == 200
+    assert manifest.json()["schema_version"] == 2
+    assert manifest.json()["split_strategy"] == "grouped-by-composter-sha256-v1"
+    assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
+    violation_detail = client.get(f"/web/violations/{manual.json()['id']}")
+    assert violation_detail.status_code == 200
+    assert "Ручной инцидент" in violation_detail.text
+    with SessionLocal() as db:
+        manual_row = db.get(Incident, manual.json()["id"])
+        assert manual_row and manual_row.photo_key
+        object_key = manual_row.photo_key
+        session = AccessSession(id="detail-session", user_id="user-1", composter_id="composter-1")
+        db.add(session)
+        db.flush()
+        db.add(Review(id="detail-review", session_id=session.id, photo_key=object_key))
+        db.commit()
+    class FakeS3:
+        def head_object(self, **_):
+            return {"ContentLength": 4, "ContentType": "image/jpeg", "ETag": '"test-etag"', "Metadata": {}}
+
+        def generate_presigned_url(self, *_args, **_kwargs):
+            return "http://example.test/photo.jpg"
+
+    monkeypatch.setattr(web.boto3, "client", lambda *_args, **_kwargs: FakeS3())
+    object_detail = client.get(f"/web/storage/object/{object_key}")
+    assert object_detail.status_code == 200
+    assert object_key in object_detail.text
+    assert 'id="storage-annotation-dialog"' in object_detail.text
+    assert 'data-box-action="move"' in object_detail.text
+    assert "Убрать всю разметку с изображения?" in object_detail.text
+    csrf_token = client.cookies.get("compost_csrf")
+    boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "contamination"}]
+    saved_annotations = client.post(
+        f"/web/storage/annotations/{object_key}",
+        data={"csrf_token": csrf_token, "annotations": json.dumps(boxes)},
+        follow_redirects=False,
+    )
+    assert saved_annotations.status_code == 303
+    with SessionLocal() as db:
+        annotation = db.get(StorageObjectAnnotation, object_key)
+        linked_review = db.get(Review, "detail-review")
+        assert annotation and json.loads(annotation.annotations) == boxes
+        assert linked_review and json.loads(linked_review.annotations) == boxes
+    deposit_detail = client.get("/web/deposits/detail-session")
+    assert deposit_detail.status_code == 200
+    assert "detail-session" in deposit_detail.text
+    history_detail = client.get(f"/web/history/{contamination_event['id']}")
+    assert history_detail.status_code == 200
+    assert "CONTAMINATION_REPORTED" in history_detail.text
+    web_created = client.post(
+        "/web/violations/create",
+        data={"csrf_token": csrf_token, "composter_id": "composter-1", "kind": "OTHER", "severity": "LOW", "title": "Создано в вебе", "description": "Проверка формы"},
+        follow_redirects=False,
+    )
+    assert web_created.status_code == 303
+    assert web_created.headers["location"].startswith("/web/violations/")
+    legacy_incidents = client.get("/web/incidents", follow_redirects=False)
+    assert legacy_incidents.status_code == 303
+    assert legacy_incidents.headers["location"].startswith("/web/violations")

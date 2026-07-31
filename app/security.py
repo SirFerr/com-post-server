@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import time
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .models import Composter, Role, User
+from .models import AuthSession, Composter, Role, User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -38,6 +39,36 @@ def create_token(user: User) -> str:
     now = datetime.now(timezone.utc)
     payload = {"sub": user.id, "role": user.role.value, "iat": now, "exp": now + timedelta(minutes=settings.jwt_ttl_minutes)}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def create_auth_session(user: User, db: Session, device_name: str) -> tuple[str, str]:
+    raw_refresh = secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc)
+    session = AuthSession(
+        user_id=user.id,
+        refresh_token_hash=hashlib.sha256(raw_refresh.encode()).hexdigest(),
+        device_name=device_name.strip() or "Unknown device",
+        expires_at=now + timedelta(days=get_settings().refresh_ttl_days),
+    )
+    db.add(session)
+    db.commit()
+    return create_token(user), raw_refresh
+
+
+def rotate_refresh_token(raw_refresh: str, db: Session) -> tuple[User, str, str]:
+    digest = hashlib.sha256(raw_refresh.encode()).hexdigest()
+    session = db.query(AuthSession).filter(AuthSession.refresh_token_hash == digest).one_or_none()
+    now = datetime.now(timezone.utc)
+    if not session or session.revoked_at is not None or session.expires_at.replace(tzinfo=timezone.utc) <= now:
+        raise HTTPException(401, "Invalid refresh token")
+    user = db.get(User, session.user_id)
+    if not user:
+        raise HTTPException(401, "User not found")
+    replacement = secrets.token_urlsafe(48)
+    session.refresh_token_hash = hashlib.sha256(replacement.encode()).hexdigest()
+    session.last_used_at = now
+    db.commit()
+    return user, create_token(user), replacement
 
 
 def user_from_token(token: str, db: Session) -> User:

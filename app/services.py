@@ -4,12 +4,12 @@ import uuid
 
 import boto3
 import httpx
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .models import AccessSession, AuditLog, Review, User, UserScore, Violation
+from .models import AccessSession, AuditLog, Review, ScoreTransaction, User, UserScore, Violation
 
 
 def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -20,6 +20,15 @@ def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def store_photo(file: UploadFile) -> str:
+    start = file.file.read(512)
+    file.file.seek(0)
+    if len(start) < 128:
+        raise HTTPException(422, "Изображение повреждено или не содержит данных")
+    is_jpeg = start.startswith(b"\xff\xd8\xff")
+    is_png = start.startswith(b"\x89PNG\r\n\x1a\n")
+    is_webp = start.startswith(b"RIFF") and start[8:12] == b"WEBP"
+    if not (is_jpeg or is_png or is_webp):
+        raise HTTPException(422, "Файл не является поддерживаемым изображением")
     settings = get_settings()
     key = f"deposits/{uuid.uuid4()}-{file.filename or 'photo.jpg'}"
     client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
@@ -45,7 +54,7 @@ def request_ml_review(photo_key: str) -> dict:
 def apply_violation(db: Session, review: Review, session: AccessSession, reason: str) -> None:
     existing = db.scalar(select(Violation).where(Violation.review_id == review.id))
     if not existing:
-        db.add(Violation(user_id=session.user_id, review_id=review.id, reason=reason))
+        db.add(Violation(user_id=session.user_id, review_id=review.id, reason=reason, created_by=review.reviewed_by))
         db.flush()
     active = db.scalar(select(func.count(Violation.id)).where(Violation.user_id == session.user_id, Violation.is_active.is_(True))) or 0
     if active >= 3:
@@ -67,5 +76,10 @@ def reward_review(db: Session, session: AccessSession, approved: bool) -> None:
     if approved:
         score.valid_uploads += 1
         score.points += 10
+        amount, reason = 10, "Загрузка одобрена"
     else:
+        previous = score.points
         score.points = max(0, score.points - 15)
+        amount, reason = score.points - previous, "Загрузка отклонена"
+    db.flush()
+    db.add(ScoreTransaction(user_id=session.user_id, amount=amount, balance_after=score.points, reason=reason, review_id=db.scalar(select(Review.id).where(Review.session_id == session.id))))

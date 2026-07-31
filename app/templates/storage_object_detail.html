@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% block title %}{{ object_name }}{% endblock %}
+{% block content %}
+<a class="back" href="/web/storage">← S3-файлы</a>
+<header class="page-header detail-page-header">
+  <div><p class="eyebrow">ОБЪЕКТ ХРАНИЛИЩА</p><h1>{{ object_name }}</h1><p class="muted">Полные технические данные и связи файла.</p></div>
+  <a class="button-link" href="{{ object_url }}" target="_blank" rel="noopener">Открыть оригинал</a>
+</header>
+<section class="entity-detail-grid">
+  <article class="panel detail-media-panel">
+    {% if object_type.startswith('image/') %}
+      <div class="annotation-view-toolbar">
+        <label class="annotation-toggle"><input type="checkbox" id="show-annotations" checked> Показывать разметку</label>
+        <button type="button" id="open-annotation-editor">Разметить</button>
+      </div>
+      <div class="object-annotation-stage annotation-view-stage" id="object-annotation-view" data-boxes='{{ annotations|tojson }}'>
+        <img class="detail-image" src="{{ object_url }}" alt="{{ object_key }}">
+        <canvas></canvas>
+      </div>
+      <p class="annotation-view-meta muted">{% if annotation_record %}Сохранено {{ annotation_record.updated_at }}{% if annotation_actor %} · {{ annotation_actor.full_name or annotation_actor.email }}{% endif %}{% else %}Разметка ещё не сохранялась отдельно{% endif %}</p>
+      <dialog class="review-dialog storage-annotation-dialog" id="storage-annotation-dialog">
+        <form method="post" action="/web/storage/annotations/{{ object_key }}" id="object-annotation-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="annotations" value='{{ annotations|tojson }}'>
+          <div class="review-dialog-layout">
+            <div class="annotation-stage" id="object-annotation-editor">
+              <img src="{{ object_url }}" alt="{{ object_key }}">
+              <canvas></canvas>
+              <button type="button" class="dialog-close" id="close-annotation-editor" aria-label="Закрыть">×</button>
+              <div class="annotation-toolbar">
+                <button type="button" data-action="undo">Отменить</button>
+                <button type="button" data-action="clear">Убрать разметку</button>
+                <span>Протяните по объекту загрязнения</span>
+              </div>
+            </div>
+            <div class="review-dialog-panel storage-annotation-panel">
+              <p class="eyebrow">РАЗМЕТКА</p>
+              <h2>Объекты загрязнения</h2>
+              <p class="muted">Координаты нормализованы от 0 до 1 относительно изображения.</p>
+              <div id="editor-coordinate-list" class="annotation-coordinate-list"></div>
+              <div class="storage-annotation-actions">
+                <button type="button" class="secondary" id="cancel-annotation-editor">Отмена</button>
+                <button type="submit">Сохранить разметку</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </dialog>
+    {% else %}<div class="empty">Предпросмотр для {{ object_type }} недоступен.</div>{% endif %}
+  </article>
+  <article class="panel">
+    <h2>Файл</h2>
+    <div class="copy-field"><small>Полный ключ</small><code id="object-key">{{ object_key }}</code><button type="button" data-copy="object-key">Копировать</button></div>
+    <dl class="data-list">
+      <div><dt>Размер</dt><dd>{{ object_size }} байт</dd></div>
+      <div><dt>Тип</dt><dd>{{ object_type }}</dd></div>
+      <div><dt>Изменён</dt><dd>{{ object_modified }}</dd></div>
+      <div><dt>ETag</dt><dd><code>{{ object_etag or '—' }}</code></dd></div>
+    </dl>
+    {% if object_metadata %}<h3>Метаданные</h3><dl class="data-list">{% for key, value in object_metadata.items() %}<div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% endif %}
+  </article>
+</section>
+<section class="panel detail-section">
+  <div class="section-heading"><div><p class="eyebrow">СВЯЗИ</p><h2>Где используется файл</h2></div><span class="status">{{ references|length }}</span></div>
+  <div class="reference-list">{% for item in references %}<a href="{{ item.url or '#' }}"><span><small>{{ item.type }}</small><strong>{{ item.title }}</strong></span><code>{{ item.meta }}</code></a>{% else %}<div class="empty">Связанные проверки, нарушения или работы не найдены.</div>{% endfor %}</div>
+</section>
+{% if audits %}<section class="panel detail-section"><h2>Действия с файлом</h2><div class="audit-list">{% for row in audits %}<a href="/web/history/{{ row.id }}"><strong>{{ row.action }}</strong><span>{{ row.created_at }}</span></a>{% endfor %}</div></section>{% endif %}
+{% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const value=document.getElementById(button.dataset.copy).textContent;await navigator.clipboard.writeText(value);button.textContent='Скопировано';setTimeout(()=>button.textContent='Копировать',1200);}));
+const viewStage=document.getElementById('object-annotation-view');
+if(viewStage){
+  const viewImage=viewStage.querySelector('img'),viewCanvas=viewStage.querySelector('canvas'),viewContext=viewCanvas.getContext('2d');
+  const visible=document.getElementById('show-annotations');
+  const dialog=document.getElementById('storage-annotation-dialog');
+  const stage=document.getElementById('object-annotation-editor');
+  const image=stage.querySelector('img'),canvas=stage.querySelector('canvas'),ctx=canvas.getContext('2d');
+  const field=document.querySelector('#object-annotation-form input[name="annotations"]');
+  const editorList=document.getElementById('editor-coordinate-list');
+  const savedBoxes=JSON.parse(viewStage.dataset.boxes||'[]');
+  const controls=document.createElement('div');
+  controls.className='box-controls';
+  controls.innerHTML='<button type="button" data-box-action="move" title="Переместить рамку" aria-label="Переместить">✥</button><button type="button" data-box-action="delete" title="Удалить рамку" aria-label="Удалить">×</button>';
+  stage.appendChild(controls);
+  let boxes=savedBoxes.map(box=>({...box})),selected=-1,hovered=-1,drag=null;
+  const clamp=(value,min=0,max=1)=>Math.max(min,Math.min(max,value));
+  const point=event=>{const rect=canvas.getBoundingClientRect();return{x:clamp((event.clientX-rect.left)/rect.width),y:clamp((event.clientY-rect.top)/rect.height)}};
+  const hitBox=p=>{
+    for(let index=boxes.length-1;index>=0;index--){
+      const box=boxes[index];
+      if(p.x>=box.x&&p.x<=box.x+box.width&&p.y>=box.y&&p.y<=box.y+box.height)return index;
+    }
+    return -1;
+  };
+  const handles=box=>[
+    {key:'nw',x:box.x,y:box.y},{key:'ne',x:box.x+box.width,y:box.y},
+    {key:'sw',x:box.x,y:box.y+box.height},{key:'se',x:box.x+box.width,y:box.y+box.height},
+  ];
+  const hitHandle=p=>{
+    if(selected<0)return null;
+    const tolerance=10/Math.max(canvas.width,canvas.height);
+    return handles(boxes[selected]).find(handle=>Math.hypot(handle.x-p.x,handle.y-p.y)<=tolerance)?.key||null;
+  };
+  function positionControls(){
+    const index=selected>=0?selected:hovered;
+    if(index<0||!boxes[index]){controls.hidden=true;return;}
+    const box=boxes[index];
+    controls.hidden=false;
+    controls.style.left=`${canvas.offsetLeft+clamp((box.x+box.width/2)*canvas.clientWidth,42,canvas.clientWidth-42)}px`;
+    controls.style.top=`${canvas.offsetTop+Math.max(8,box.y*canvas.clientHeight-42)}px`;
+  }
+  function draw(context,targetCanvas,items){
+    context.clearRect(0,0,targetCanvas.width,targetCanvas.height);
+    items.forEach((box,index)=>{
+      context.strokeStyle='#ff746b';context.lineWidth=3;
+      context.strokeRect(box.x*targetCanvas.width,box.y*targetCanvas.height,box.width*targetCanvas.width,box.height*targetCanvas.height);
+      context.fillStyle='#ff746b';context.font='bold 12px sans-serif';context.fillText(String(index+1),box.x*targetCanvas.width+5,box.y*targetCanvas.height+16);
+    });
+  }
+  function syncEditor(){
+    field.value=JSON.stringify(boxes);
+    editorList.replaceChildren();
+    if(!boxes.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='Объекты не размечены.';editorList.appendChild(empty);return;}
+    boxes.forEach((box,index)=>{
+      const row=document.createElement('div'),title=document.createElement('strong'),coords=document.createElement('code'),remove=document.createElement('button');
+      title.textContent=`#${index+1} · ${box.label||'contamination'}`;
+      coords.textContent=`x ${box.x.toFixed(4)} · y ${box.y.toFixed(4)}\nw ${box.width.toFixed(4)} · h ${box.height.toFixed(4)}`;
+      remove.type='button';remove.className='secondary';remove.textContent='Удалить';remove.addEventListener('click',()=>{if(!confirm(`Удалить рамку #${index+1}?`))return;boxes.splice(index,1);selected=-1;hovered=-1;render();syncEditor();});
+      row.append(title,coords,remove);editorList.appendChild(row);
+    });
+  }
+  function resizeView(){viewCanvas.width=viewImage.clientWidth;viewCanvas.height=viewImage.clientHeight;if(visible.checked)draw(viewContext,viewCanvas,savedBoxes);}
+  function resize(){
+    if(!image.naturalWidth||!image.naturalHeight)return;
+    const areaWidth=image.clientWidth,areaHeight=image.clientHeight;
+    const scale=Math.min(areaWidth/image.naturalWidth,areaHeight/image.naturalHeight);
+    const width=Math.round(image.naturalWidth*scale),height=Math.round(image.naturalHeight*scale);
+    canvas.width=width;canvas.height=height;
+    canvas.style.inset='auto';
+    canvas.style.left=`${image.offsetLeft+Math.round((areaWidth-width)/2)}px`;
+    canvas.style.top=`${image.offsetTop+Math.round((areaHeight-height)/2)}px`;
+    canvas.style.width=`${width}px`;canvas.style.height=`${height}px`;
+    render();
+  }
+  function render(draft=null){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    [...boxes,...(draft?[draft]:[])].forEach((box,index)=>{
+      ctx.strokeStyle=index===selected?'#caff32':'#ff746b';ctx.lineWidth=index===selected?4:3;
+      ctx.strokeRect(box.x*canvas.width,box.y*canvas.height,box.width*canvas.width,box.height*canvas.height);
+      ctx.fillStyle=index===selected?'#caff32':'#ff746b';ctx.font='bold 12px sans-serif';ctx.fillText(String(index+1),box.x*canvas.width+5,box.y*canvas.height+16);
+    });
+    if(selected>=0&&boxes[selected]){
+      ctx.fillStyle='#caff32';ctx.strokeStyle='#101410';ctx.lineWidth=2;
+      handles(boxes[selected]).forEach(handle=>{ctx.beginPath();ctx.arc(handle.x*canvas.width,handle.y*canvas.height,7,0,Math.PI*2);ctx.fill();ctx.stroke();});
+    }
+    field.value=JSON.stringify(boxes);
+    positionControls();
+  }
+  canvas.addEventListener('pointerdown',event=>{
+    const p=point(event),handle=hitHandle(p),hit=hitBox(p);
+    canvas.setPointerCapture(event.pointerId);
+    if(handle){
+      drag={type:'resize',handle,index:selected,start:p,original:{...boxes[selected]}};
+    }else if(hit>=0){
+      selected=hit;render();
+    }else{
+      selected=-1;drag={type:'draw',start:p};render();
+    }
+  });
+  canvas.addEventListener('pointermove',event=>{
+    const p=point(event);
+    if(!drag){
+      hovered=hitBox(p);
+      const handle=hitHandle(p);
+      canvas.style.cursor=handle?`${handle}-resize`:hovered>=0?'pointer':'crosshair';
+      positionControls();
+      return;
+    }
+    if(drag.type==='draw'){
+      render({x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'});
+    }else if(drag.type==='move'){
+      const box=drag.original;
+      boxes[drag.index]={...box,x:clamp(box.x+p.x-drag.start.x,0,1-box.width),y:clamp(box.y+p.y-drag.start.y,0,1-box.height)};
+      render();
+    }else if(drag.type==='resize'){
+      const box=drag.original,min=.015;
+      let left=box.x,top=box.y,right=box.x+box.width,bottom=box.y+box.height;
+      if(drag.handle.includes('w'))left=clamp(p.x,0,right-min);
+      if(drag.handle.includes('e'))right=clamp(p.x,left+min,1);
+      if(drag.handle.includes('n'))top=clamp(p.y,0,bottom-min);
+      if(drag.handle.includes('s'))bottom=clamp(p.y,top+min,1);
+      boxes[drag.index]={...box,x:left,y:top,width:right-left,height:bottom-top};
+      render();
+    }
+  });
+  canvas.addEventListener('pointerup',event=>{
+    if(!drag)return;
+    if(drag.type==='draw'){
+      const p=point(event),box={x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'};
+      if(box.width>.01&&box.height>.01){boxes.push(box);selected=boxes.length-1;}
+    }
+    drag=null;render();syncEditor();
+  });
+  controls.addEventListener('pointerdown',event=>event.stopPropagation());
+  controls.querySelector('[data-box-action="delete"]').addEventListener('click',()=>{
+    const index=selected>=0?selected:hovered;
+    if(index<0||!confirm(`Удалить рамку #${index+1}?`))return;
+    boxes.splice(index,1);
+    selected=-1;hovered=-1;render();syncEditor();
+  });
+  const moveButton=controls.querySelector('[data-box-action="move"]');
+  moveButton.addEventListener('pointerdown',event=>{
+    event.preventDefault();event.stopPropagation();
+    const index=selected>=0?selected:hovered;
+    if(index<0||!boxes[index])return;
+    selected=index;drag={type:'move',index,start:point(event),original:{...boxes[index]}};
+    moveButton.setPointerCapture(event.pointerId);moveButton.classList.add('active');render();
+  });
+  moveButton.addEventListener('pointermove',event=>{
+    if(!drag||drag.type!=='move')return;
+    const p=point(event),box=drag.original;
+    boxes[drag.index]={...box,x:clamp(box.x+p.x-drag.start.x,0,1-box.width),y:clamp(box.y+p.y-drag.start.y,0,1-box.height)};
+    render();
+  });
+  const stopMoving=()=>{
+    if(!drag||drag.type!=='move')return;
+    drag=null;moveButton.classList.remove('active');render();syncEditor();
+  };
+  moveButton.addEventListener('pointerup',stopMoving);
+  moveButton.addEventListener('pointercancel',stopMoving);
+  visible.addEventListener('change',()=>{viewCanvas.hidden=!visible.checked;if(visible.checked)draw(viewContext,viewCanvas,savedBoxes);});
+  stage.querySelector('[data-action="undo"]').addEventListener('click',()=>{boxes.pop();selected=-1;hovered=-1;render();syncEditor();});
+  stage.querySelector('[data-action="clear"]').addEventListener('click',()=>{if(!boxes.length||!confirm('Убрать всю разметку с изображения?'))return;boxes=[];selected=-1;hovered=-1;render();syncEditor();});
+  function closeEditor(){dialog.close();}
+  document.getElementById('open-annotation-editor').addEventListener('click',()=>{boxes=savedBoxes.map(box=>({...box}));selected=-1;hovered=-1;syncEditor();dialog.showModal();requestAnimationFrame(resize);});
+  document.getElementById('close-annotation-editor').addEventListener('click',closeEditor);
+  document.getElementById('cancel-annotation-editor').addEventListener('click',closeEditor);
+  dialog.addEventListener('click',event=>{if(event.target===dialog)closeEditor();});
+  image.addEventListener('load',resize);new ResizeObserver(resize).observe(image);
+  viewImage.addEventListener('load',resizeView);new ResizeObserver(resizeView).observe(viewImage);
+  syncEditor();resizeView();
+}
+</script>{% endblock %}

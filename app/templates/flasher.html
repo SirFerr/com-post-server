@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Прошивка ESP{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div><p class="eyebrow">ESP FLASHER</p><h1>Прошивка устройства</h1><p class="muted">Для обычной работы достаточно выбрать готовую прошивку и подключить ESP.</p></div>
+  <span id="serial-support" class="status warn">Проверка браузера</span>
+</header>
+
+<section class="panel flasher-connect">
+  <div><p class="eyebrow">ШАГ 1</p><h2>Подключите ESP</h2><p id="chip-status" class="muted">Порт ещё не выбран</p></div>
+  <div class="row-actions"><button id="connect-device" type="button">Выбрать ESP</button><button id="disconnect-device" type="button" class="secondary" disabled>Отключить</button></div>
+</section>
+
+<section class="panel simple-flash">
+  <div><p class="eyebrow">ПРОСТОЙ РЕЖИМ</p><h2>Выберите готовую прошивку</h2></div>
+  <label>Прошивка из хранилища
+    <select id="simple-firmware">
+      <option value="">Выберите версию…</option>
+      {% for firmware in firmwares %}<option value="{{ firmware.key }}" data-url="/web/flasher/firmwares/{{ firmware.key }}" data-address="{{ firmware.address }}" data-name="{{ firmware.name }}">{{ firmware.name }} · {{ firmware.chip }} · {{ (firmware.size / 1024)|round(1) }} КБ</option>{% endfor %}
+    </select>
+  </label>
+  <button id="simple-flash-button" type="button" disabled>Прошить выбранную</button>
+</section>
+
+<div id="flash-feedback" class="flash-feedback" hidden>
+  <span class="flash-feedback-icon">ESP</span>
+  <div><strong id="flash-progress-label">Подготовка прошивки…</strong><div class="flash-progress"><div id="flash-progress-bar"></div></div></div>
+</div>
+
+<details class="panel compact-details advanced-flash">
+  <summary><span><small>РАСШИРЕННЫЙ РЕЖИМ</small><strong>Сегменты, адреса и параметры flash</strong></span><span>Открыть</span></summary>
+  <div class="details-body">
+    <p class="muted">Используйте для bootloader, partitions и нескольких BIN-файлов с разными адресами.</p>
+    <div id="firmware-segments" class="firmware-segments">
+      <div class="firmware-segment"><input type="file" accept=".bin,application/octet-stream"><input class="segment-address" value="0x1000" aria-label="Адрес записи"><button type="button" class="danger remove-segment" title="Удалить">×</button></div>
+    </div>
+    <button id="add-segment" type="button" class="secondary">Добавить сегмент</button>
+    <div class="form-grid advanced-options">
+      <label>Скорость<select id="flash-baud"><option>115200</option><option selected>460800</option><option>921600</option></select></label>
+      <label>Размер flash<select id="flash-size"><option selected>keep</option><option>detect</option><option>2MB</option><option>4MB</option><option>8MB</option><option>16MB</option><option>32MB</option></select></label>
+      <label>Режим<select id="flash-mode"><option selected>dio</option><option>qio</option><option>dout</option><option>qout</option><option>keep</option></select></label>
+      <label>Частота<select id="flash-frequency"><option selected>40m</option><option>80m</option><option>26m</option><option>20m</option><option>keep</option></select></label>
+      <label class="check danger-check"><input id="erase-all" type="checkbox"> Полностью стереть flash перед записью</label>
+      <button id="advanced-flash-button" type="button" disabled>Прошить сегменты</button>
+    </div>
+  </div>
+</details>
+
+<details class="panel compact-details">
+  <summary><span><small>ДИАГНОСТИКА</small><strong>Терминал прошивки</strong></span><span>Открыть</span></summary>
+  <div class="details-body"><div class="terminal-heading"><span></span><button id="clear-terminal" type="button" class="secondary">Очистить</button></div><pre id="flash-terminal" class="flash-terminal">Готов к подключению.
+</pre></div>
+</details>
+
+<section class="panel firmware-storage-panel">
+  <div><p class="eyebrow">ХРАНИЛИЩЕ</p><h2>Добавить прошивку</h2><p class="muted">Загрузка доступна администратору и инженеру. После загрузки файл появится в простом режиме.</p></div>
+  <form method="post" action="/web/flasher/firmwares" enctype="multipart/form-data" class="firmware-upload">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>BIN-файл<input type="file" name="file" accept=".bin,application/octet-stream" required></label>
+    <label>Адрес записи<input name="address" value="0x10000" required></label>
+    <label>Чип / назначение<input name="chip" value="ESP32" required></label>
+    <button>Загрузить</button>
+  </form>
+  <div class="firmware-library">
+    {% for firmware in firmwares %}
+    <article><div><strong>{{ firmware.name }}</strong><p class="muted">{{ firmware.chip }} · {{ firmware.address }} · {{ (firmware.size / 1024)|round(1) }} КБ</p></div><form method="post" action="/web/flasher/firmwares/{{ firmware.key }}/delete" onsubmit="return confirm('Удалить прошивку {{ firmware.name }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger">Удалить</button></form></article>
+    {% else %}<p class="muted">В хранилище пока нет прошивок.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+import { ESPLoader, Transport } from '/static/vendor/esptool-js.js';
+const csrfToken={{ csrf_token|tojson }};
+const support=document.getElementById('serial-support'),chipStatus=document.getElementById('chip-status');
+const connectButton=document.getElementById('connect-device'),disconnectButton=document.getElementById('disconnect-device');
+const simpleButton=document.getElementById('simple-flash-button'),advancedButton=document.getElementById('advanced-flash-button');
+const simpleSelect=document.getElementById('simple-firmware'),segments=document.getElementById('firmware-segments');
+const terminalElement=document.getElementById('flash-terminal'),feedback=document.getElementById('flash-feedback'),progressBar=document.getElementById('flash-progress-bar'),progressLabel=document.getElementById('flash-progress-label');
+let transport=null,loader=null,chipName='',busy=false;
+const terminal={clean(){terminalElement.textContent='';},write(data){terminalElement.textContent+=data;terminalElement.scrollTop=terminalElement.scrollHeight;},writeLine(data){this.write(data+'\n');}};
+const refreshButtons=()=>{connectButton.disabled=busy||!!loader;disconnectButton.disabled=busy||!loader;simpleButton.disabled=busy||!loader||!simpleSelect.value;advancedButton.disabled=busy||!loader;};
+const logAudit=async payload=>{try{await fetch('/web/flasher/audit',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify(payload)});}catch(_){}};
+if(!('serial' in navigator)){support.textContent='Нужен Chrome или Edge';support.className='status off';connectButton.disabled=true;terminal.writeLine('Web Serial недоступен. Откройте страницу в настольном Chrome/Edge через HTTPS или localhost.');}
+else{support.textContent='Web Serial доступен';support.className='status ok';}
+connectButton.onclick=async()=>{
+  busy=true;refreshButtons();
+  try{
+    const port=await navigator.serial.requestPort();transport=new Transport(port,true);
+    loader=new ESPLoader({transport,baudrate:Number(document.getElementById('flash-baud').value),terminal,debugLogging:false});
+    chipStatus.textContent='Подключение к загрузчику…';chipName=await loader.main();chipStatus.textContent=`Подключено: ${chipName}`;support.textContent='ESP подключена';support.className='status ok';
+  }catch(error){terminal.writeLine(`Ошибка подключения: ${error.message||error}`);loader=null;transport=null;chipStatus.textContent='Порт не выбран';}
+  busy=false;refreshButtons();
+};
+disconnectButton.onclick=async()=>{try{if(transport)await transport.disconnect();}catch(_){}loader=null;transport=null;chipName='';chipStatus.textContent='ESP отключена';refreshButtons();};
+simpleSelect.onchange=refreshButtons;
+const flashFiles=async(files,eraseAll=false)=>{
+  if(!loader||!files.length)return;
+  if(eraseAll&&!confirm('Полностью стереть flash-память перед записью?'))return;
+  busy=true;refreshButtons();feedback.hidden=false;feedback.className='flash-feedback active';progressBar.style.width='0%';progressLabel.textContent='Подготовка…';
+  try{
+    await loader.writeFlash({fileArray:files.map(file=>({data:file.data,address:file.address})),flashMode:document.getElementById('flash-mode').value,flashFreq:document.getElementById('flash-frequency').value,flashSize:document.getElementById('flash-size').value,eraseAll,compress:true,reportProgress:(index,written,total)=>{const percent=Math.round(written/total*100);progressBar.style.width=`${percent}%`;progressLabel.textContent=`${files[index]?.name||'Сегмент'}: ${percent}%`;}});
+    await loader.after('hard_reset');progressBar.style.width='100%';progressLabel.textContent='Готово — устройство перезагружено';feedback.className='flash-feedback success';terminal.writeLine('Прошивка успешно завершена.');
+    await logAudit({success:true,chip:chipName,erase_all:eraseAll,files:files.map(({name,address,data})=>({name,address,size:data.length}))});
+  }catch(error){progressLabel.textContent='Ошибка прошивки';feedback.className='flash-feedback error';terminal.writeLine(`Ошибка: ${error.message||error}`);await logAudit({success:false,chip:chipName,error:String(error.message||error)});}
+  busy=false;refreshButtons();
+};
+simpleButton.onclick=async()=>{
+  const option=simpleSelect.selectedOptions[0];busy=true;refreshButtons();feedback.hidden=false;feedback.className='flash-feedback active';progressBar.style.width='8%';progressLabel.textContent='Загрузка прошивки из хранилища…';
+  try{const response=await fetch(option.dataset.url);if(!response.ok)throw new Error('Не удалось загрузить прошивку');const data=new Uint8Array(await response.arrayBuffer());const address=parseInt(option.dataset.address,16);busy=false;await flashFiles([{data,address,name:option.dataset.name}]);}
+  catch(error){progressLabel.textContent='Не удалось загрузить прошивку';feedback.className='flash-feedback error';terminal.writeLine(`Ошибка хранилища: ${error.message||error}`);busy=false;refreshButtons();}
+};
+document.getElementById('add-segment').onclick=()=>{const row=document.createElement('div');row.className='firmware-segment';row.innerHTML='<input type="file" accept=".bin,application/octet-stream"><input class="segment-address" value="0x10000" aria-label="Адрес записи"><button type="button" class="danger remove-segment">×</button>';segments.appendChild(row);};
+segments.addEventListener('click',event=>{if(event.target.closest('.remove-segment')&&segments.children.length>1)event.target.closest('.firmware-segment').remove();});
+advancedButton.onclick=async()=>{const files=[];for(const row of segments.querySelectorAll('.firmware-segment')){const file=row.querySelector('input[type=file]').files[0];if(!file)continue;const raw=row.querySelector('.segment-address').value.trim(),address=raw.toLowerCase().startsWith('0x')?parseInt(raw,16):parseInt(raw,10);if(!Number.isInteger(address)||address<0){terminal.writeLine(`Некорректный адрес: ${raw}`);return;}files.push({data:new Uint8Array(await file.arrayBuffer()),address,name:file.name});}if(!files.length){terminal.writeLine('Добавьте хотя бы один BIN-файл.');return;}await flashFiles(files,document.getElementById('erase-all').checked);};
+document.getElementById('clear-terminal').onclick=()=>terminal.clean();
+refreshButtons();
+</script>
+{% endblock %}

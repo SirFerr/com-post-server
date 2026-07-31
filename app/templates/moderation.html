@@ -1,9 +1,190 @@
 {% extends "base.html" %}
 {% block title %}Модерация{% endblock %}
 {% block content %}
-<header class="page-header"><div><p class="eyebrow">ОЧЕРЕДЬ</p><h1>Модерация</h1><p class="muted">Откройте фото, изучите загрузку и примите решение</p></div><span class="counter">{{ reviews|length }}</span></header>
-<section class="review-grid">{% for row in reviews %}
-  <article class="review"><button type="button" class="review-photo" onclick="document.getElementById('review-{{ row.review.id }}').showModal()"><img src="{{ row.photo_url }}" alt="Фото загрузки"></button><div><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><button type="button" onclick="document.getElementById('review-{{ row.review.id }}').showModal()">Открыть проверку</button></div></article>
-  <dialog class="review-dialog" id="review-{{ row.review.id }}"><div class="review-dialog-layout"><div class="review-dialog-photo"><img src="{{ row.photo_url }}" alt="Фото загрузки"><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></div><div class="review-dialog-panel"><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><div class="fill-actions"><form method="post" action="/web/equipment/{{ row.session.composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="from_moderation" value="true"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if row.session.composter.needs_emptying }}" onclick="return confirm('Отметить бак заполненным?')">Заполнен</button></form><form method="post" action="/web/equipment/{{ row.session.composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="from_moderation" value="true"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not row.session.composter.needs_emptying }}" onclick="return confirm('Отметить бак незаполненным?')">Не заполнен</button></form></div><form method="post" action="/web/reviews/{{ row.review.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="comment" placeholder="Комментарий"><input name="violation_reason" value="INVALID_COMPOST" placeholder="Причина нарушения"><div class="review-actions"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></div></form></div></div></dialog>
-{% else %}<div class="empty">Очередь пуста — всё проверено.</div>{% endfor %}</section>
+<header class="page-header">
+  <div><p class="eyebrow">ОЧЕРЕДЬ</p><h1>Модерация и разметка</h1><p class="muted">Выделяйте загрязнения прямоугольниками прямо на фотографии. Разметка сохранится в истории и ML-датасете.</p></div>
+  <span class="counter">{{ reviews|length }}</span>
+</header>
+<section class="review-grid">
+{% for row in reviews %}
+  <article class="review">
+    <button type="button" class="review-photo" onclick="document.getElementById('review-{{ row.review.id }}').showModal()"><img src="{{ row.photo_url }}" alt="Фото загрузки"></button>
+    <div><small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small><p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p><button type="button" onclick="document.getElementById('review-{{ row.review.id }}').showModal()">Открыть проверку</button></div>
+  </article>
+  <dialog class="review-dialog annotation-dialog" id="review-{{ row.review.id }}">
+    <div class="review-dialog-layout">
+      <div class="annotation-stage" data-review="{{ row.review.id }}" data-boxes='{{ row.annotations|e }}'>
+        <img src="{{ row.photo_url }}" alt="Фото загрузки">
+        <canvas></canvas>
+        <button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button>
+        <div class="annotation-toolbar"><button type="button" data-action="undo">Отменить</button><button type="button" data-action="clear">Очистить</button><span>Протяните мышью по загрязнению</span></div>
+      </div>
+      <div class="review-dialog-panel">
+        <small>{{ row.session.composter.name }} · {{ row.session.user.email }}</small>
+        <h2>Решение по загрузке</h2>
+        <p>Уверенность модели: {{ (row.review.ml_confidence * 100)|round|int }}%{% if row.violations %} · {{ row.violations }}{% endif %}</p>
+        <div class="fill-actions"><form method="post" action="/web/equipment/{{ row.session.composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="from_moderation" value="true"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if row.session.composter.needs_emptying }}">Бак заполнен</button></form><form method="post" action="/web/equipment/{{ row.session.composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="from_moderation" value="true"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not row.session.composter.needs_emptying }}">Бак освобождён</button></form></div>
+        <form method="post" action="/web/reviews/{{ row.review.id }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="annotations" value="{{ row.annotations|e }}">
+          <label>Комментарий<input name="comment" placeholder="Обнаружено нарушение"></label>
+          <label>Категория нарушения<input name="violation_reason" value="INVALID_COMPOST"></label>
+          <div class="review-actions"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+{% else %}<div class="empty">Очередь пуста — всё проверено.</div>{% endfor %}
+</section>
+<section class="panel moderation-history">
+  <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Последние завершённые проверки</h2><p class="muted">Решение, исполнитель и результат сохраняются вместе с фотографией и разметкой.</p></div><span class="status">{{ review_history|length }}</span></div>
+  <div class="moderation-history-list">
+    {% for row in review_history %}
+    <article class="moderation-history-row clickable-card" data-card-href="{{ row.detail_url }}" role="link" tabindex="0">
+      <a href="{{ row.detail_url }}" class="moderation-history-photo"><img src="{{ row.photo_url }}" alt="Фото проверки"></a>
+      <div><a href="{{ row.detail_url }}"><strong>{{ row.composter.name if row.composter else 'Компостер удалён' }}</strong></a><span>{% if row.user %}<a href="/web/users/{{ row.user.id }}">{{ row.user.full_name or row.user.email }}</a>{% else %}Пользователь удалён{% endif %} · {{ row.review.reviewed_at.strftime('%d.%m.%Y %H:%M') if row.review.reviewed_at else row.review.created_at.strftime('%d.%m.%Y %H:%M') }}</span><small>{{ row.review.comment or row.review.violation_reason or 'Без комментария' }}</small></div>
+      <div class="moderation-history-result"><span class="status {{ 'ok' if row.review.status.value == 'APPROVED' else 'off' }}">{{ 'Принято' if row.review.status.value == 'APPROVED' else 'Отклонено' }}</span><small>{% if row.reviewer %}{{ row.reviewer.full_name or row.reviewer.email }}{% else %}Система{% endif %}</small></div>
+    </article>
+    {% else %}<div class="empty">Завершённых проверок пока нет.</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('.annotation-stage').forEach(stage => {
+  const canvas = stage.querySelector('canvas'), image = stage.querySelector('img');
+  const field = stage.closest('dialog').querySelector('input[name="annotations"]');
+  const controls = document.createElement('div');
+  controls.className = 'box-controls';
+  controls.innerHTML = '<button type="button" data-box-action="move" title="Переместить область" aria-label="Переместить">✥</button><button type="button" data-box-action="delete" title="Удалить область" aria-label="Удалить">×</button>';
+  stage.appendChild(controls);
+  let boxes = JSON.parse(stage.dataset.boxes || '[]'), selected = -1, hovered = -1, drag = null;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const resize = () => { canvas.width = image.clientWidth; canvas.height = image.clientHeight; render(); };
+  const hitBox = p => {
+    for (let i = boxes.length - 1; i >= 0; i--) {
+      const b = boxes[i];
+      if (p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height) return i;
+    }
+    return -1;
+  };
+  const handles = b => [
+    {key:'nw', x:b.x, y:b.y}, {key:'ne', x:b.x+b.width, y:b.y},
+    {key:'sw', x:b.x, y:b.y+b.height}, {key:'se', x:b.x+b.width, y:b.y+b.height},
+  ];
+  const hitHandle = p => {
+    if (selected < 0) return null;
+    const tolerance = 10 / Math.max(canvas.width, canvas.height);
+    return handles(boxes[selected]).find(h => Math.hypot(h.x-p.x, h.y-p.y) <= tolerance)?.key || null;
+  };
+  const positionControls = () => {
+    const index = selected >= 0 ? selected : hovered;
+    if (index < 0 || !boxes[index]) { controls.hidden = true; return; }
+    const b = boxes[index];
+    controls.hidden = false;
+    controls.style.left = `${clamp((b.x + b.width / 2) * canvas.clientWidth, 42, canvas.clientWidth - 42)}px`;
+    controls.style.top = `${Math.max(8, b.y * canvas.clientHeight - 42)}px`;
+  };
+  const render = (draft = null) => {
+    const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
+    [...boxes, ...(draft ? [draft] : [])].forEach((b, index) => {
+      ctx.strokeStyle = index === selected ? '#d7ff39' : '#ff3b30';
+      ctx.lineWidth = index === selected ? 4 : 3;
+      ctx.strokeRect(b.x * canvas.width, b.y * canvas.height, b.width * canvas.width, b.height * canvas.height);
+    });
+    if (selected >= 0 && boxes[selected]) {
+      ctx.fillStyle = '#d7ff39'; ctx.strokeStyle = '#101410'; ctx.lineWidth = 2;
+      handles(boxes[selected]).forEach(h => {
+        ctx.beginPath(); ctx.arc(h.x * canvas.width, h.y * canvas.height, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      });
+    }
+    field.value = JSON.stringify(boxes);
+    positionControls();
+  };
+  const point = e => { const r = canvas.getBoundingClientRect(); return {x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height}; };
+  canvas.addEventListener('pointerdown', e => {
+    const p = point(e), handle = hitHandle(p), hit = hitBox(p);
+    canvas.setPointerCapture(e.pointerId);
+    if (handle) {
+      drag = {type:'resize', handle, index:selected, start:p, original:{...boxes[selected]}};
+    } else if (hit >= 0) {
+      selected = hit;
+      render();
+    } else {
+      selected = -1;
+      drag = {type:'draw', start:p};
+      render();
+    }
+  });
+  canvas.addEventListener('pointermove', e => {
+    const p = point(e);
+    if (!drag) {
+      hovered = hitBox(p);
+      const handle = hitHandle(p);
+      canvas.style.cursor = handle ? `${handle}-resize` : hovered >= 0 ? 'pointer' : 'crosshair';
+      positionControls();
+      return;
+    }
+    if (drag.type === 'draw') {
+      render({x:Math.min(drag.start.x,p.x), y:Math.min(drag.start.y,p.y), width:Math.abs(p.x-drag.start.x), height:Math.abs(p.y-drag.start.y)});
+    } else if (drag.type === 'move') {
+      const b = drag.original;
+      boxes[drag.index] = {...b, x:clamp(b.x+p.x-drag.start.x,0,1-b.width), y:clamp(b.y+p.y-drag.start.y,0,1-b.height)};
+      render();
+    } else if (drag.type === 'resize') {
+      const b = drag.original, min=.015;
+      let left=b.x, top=b.y, right=b.x+b.width, bottom=b.y+b.height;
+      if (drag.handle.includes('w')) left=clamp(p.x,0,right-min);
+      if (drag.handle.includes('e')) right=clamp(p.x,left+min,1);
+      if (drag.handle.includes('n')) top=clamp(p.y,0,bottom-min);
+      if (drag.handle.includes('s')) bottom=clamp(p.y,top+min,1);
+      boxes[drag.index] = {...b, x:left, y:top, width:right-left, height:bottom-top};
+      render();
+    }
+  });
+  canvas.addEventListener('pointerup', e => {
+    if (!drag) return;
+    if (drag.type === 'draw') {
+      const p=point(e), b={x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'};
+      if (b.width>.01 && b.height>.01) { boxes.push(b); selected=boxes.length-1; }
+    }
+    drag=null; render();
+  });
+  controls.addEventListener('pointerdown', e => e.stopPropagation());
+  controls.querySelector('[data-box-action="delete"]').onclick = () => {
+    const index = selected >= 0 ? selected : hovered;
+    if (index >= 0) boxes.splice(index, 1);
+    selected=-1; hovered=-1; render();
+  };
+  const moveButton = controls.querySelector('[data-box-action="move"]');
+  moveButton.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const index = selected >= 0 ? selected : hovered;
+    if (index < 0 || !boxes[index]) return;
+    selected = index;
+    drag = {type:'move', index, start:point(e), original:{...boxes[index]}};
+    moveButton.setPointerCapture(e.pointerId);
+    moveButton.classList.add('active');
+    render();
+  });
+  moveButton.addEventListener('pointermove', e => {
+    if (!drag || drag.type !== 'move') return;
+    const p = point(e), b = drag.original;
+    boxes[drag.index] = {...b, x:clamp(b.x+p.x-drag.start.x,0,1-b.width), y:clamp(b.y+p.y-drag.start.y,0,1-b.height)};
+    render();
+  });
+  const stopMoving = () => {
+    if (!drag || drag.type !== 'move') return;
+    drag = null;
+    moveButton.classList.remove('active');
+    render();
+  };
+  moveButton.addEventListener('pointerup', stopMoving);
+  moveButton.addEventListener('pointercancel', stopMoving);
+  stage.querySelector('[data-action="undo"]').onclick = () => { boxes.pop(); selected=-1; render(); };
+  stage.querySelector('[data-action="clear"]').onclick = () => { boxes=[]; selected=-1; hovered=-1; render(); };
+  image.addEventListener('load', resize); new ResizeObserver(resize).observe(image);
+});
+</script>
 {% endblock %}

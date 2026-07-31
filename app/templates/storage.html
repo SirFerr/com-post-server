@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}S3-хранилище{% endblock %}
+{% block content %}
+<header class="page-header"><div><p class="eyebrow">ХРАНИЛИЩЕ</p><h1>Файлы S3 / MinIO</h1><p class="muted">Поиск по префиксу ключа, просмотр фото и технических метаданных.</p></div></header>
+<div class="storage-tools">
+  <form class="filters" method="get"><input name="q" value="{{ q }}" placeholder="Например: deposits/"><button>Найти</button></form>
+</div>
+{% if storage_error %}<div class="empty">S3 недоступен: {{ storage_error }}</div>{% endif %}
+<section class="storage-grid">{% for file in files %}
+  <article class="storage-card clickable-card" data-card-href="{{ file.detail_url }}" role="link" tabindex="0">
+    <a class="storage-thumbnail" href="{{ file.detail_url }}"><img src="{{ file.url }}" alt="{{ file.key }}"></a>
+    <div class="storage-file">
+      <a class="storage-name" href="{{ file.detail_url }}" title="{{ file.key }}">{{ file.label }} · {{ file.short_id }}</a>
+      <p>{{ file.size_label }} · {{ file.modified.strftime('%d.%m.%Y %H:%M') }}</p>
+      <a class="storage-key" href="{{ file.detail_url }}" title="{{ file.key }}">{{ file.key }}</a>
+    </div>
+  </article>
+{% else %}<div class="empty">Файлы не найдены.</div>{% endfor %}</section>
+{% endblock %}

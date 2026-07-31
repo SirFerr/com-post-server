@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}ComPost{% endblock %} · Панель</title>
-  <link rel="stylesheet" href="/static/admin.css?v=4">
-  <link rel="stylesheet" href="/static/review.css?v=4">
+  <link rel="stylesheet" href="/static/admin.css?v=21">
+  <link rel="stylesheet" href="/static/review.css?v=11">
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -16,10 +16,12 @@
     {% if actor.role.value == 'ENGINEER' %}
       <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
       <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
+      <a class="{{ 'active' if active == 'users' }}" href="/web/users">Пользователи</a>
     {% elif actor.role.value == 'MODERATOR' %}
       <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
       <a class="{{ 'active' if active == 'moderation' }}" href="/web/moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>
       <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
+      <a class="{{ 'active' if active == 'users' }}" href="/web/users">Пользователи</a>
     {% else %}
       <a class="{{ 'active' if active == 'dashboard' }}" href="/web/dashboard">Статусы</a>
       <a class="{{ 'active' if active == 'equipment' }}" href="/web/equipment">Оборудование</a>
@@ -27,6 +29,11 @@
       <a class="{{ 'active' if active == 'moderation' }}" href="/web/moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>
     {% endif %}
     <a class="{{ 'active' if active == 'map' }}" href="/web/map">Карта</a>
+    {% if actor.role.value in ['ADMIN','ENGINEER'] %}<a class="{{ 'active' if active == 'storage' }}" href="/web/storage">S3-файлы</a>{% endif %}
+    {% if actor.role.value in ['ADMIN','ENGINEER','MODERATOR'] %}<a class="{{ 'active' if active == 'violations' }}" href="/web/violations">Нарушения и инциденты <b>{{ stats.active_violations }}</b></a>{% endif %}
+    {% if actor.role.value in ['ADMIN','ENGINEER'] %}<a class="{{ 'active' if active == 'flasher' }}" href="/web/flasher">Прошивка ESP</a>{% endif %}
+    {% if actor.role.value == 'ADMIN' %}<a class="{{ 'active' if active == 'analytics' }}" href="/web/analytics">Аналитика</a>{% endif %}
+    {% if actor.role.value == 'ADMIN' %}<a class="{{ 'active' if active == 'ml' }}" href="/web/ml">ML-контур</a>{% endif %}
   </nav>
   <div class="account">
     <span>{{ actor.full_name or actor.email }}</span><small>{{ actor.email }}</small>
@@ -36,6 +43,10 @@
 <main class="content">
   {% block content %}{% endblock %}
 </main>
+<script>
+document.addEventListener('click',event=>{const card=event.target.closest('[data-card-href]');if(card&&!event.target.closest('a,button,input,select,textarea,form,dialog'))location.href=card.dataset.cardHref;});
+document.addEventListener('keydown',event=>{const card=event.target.closest('[data-card-href]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();location.href=card.dataset.cardHref;}});
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

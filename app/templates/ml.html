@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}ML-контур{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">MACHINE LEARNING</p>
+    <h1>Детектор загрязнений</h1>
+    <p class="muted">Модерация собирает разметку, версии датасета фиксируют снимок данных, а обучение выпускает проверяемую модель.</p>
+  </div>
+  <span class="status {{ 'ok' if service_status.status == 'ok' else 'off' }}">{{ 'Обученная модель' if service_status.trained_model_active else 'Эвристика v1' }}</span>
+</header>
+
+<section class="stats ml-stats">
+  <article><small>Проверено</small><strong>{{ reviewed }}</strong><span>всего фото</span></article>
+  <article><small>Чистый компост</small><strong>{{ approved }}</strong><span>отрицательные примеры</span></article>
+  <article><small>Загрязнение</small><strong>{{ contaminated }}</strong><span>положительные примеры</span></article>
+  <article><small>С прямоугольниками</small><strong>{{ annotated }}</strong><span>для детектора</span></article>
+</section>
+
+<section class="ml-grid">
+  <article class="panel">
+    <p class="eyebrow">ЕЖЕНЕДЕЛЬНЫЙ ЦИКЛ</p>
+    <h2>От фото до новой модели</h2>
+    <ol class="ml-steps">
+      <li><strong>Собираем</strong><span>Фото автоматически попадают в MinIO.</span></li>
+      <li><strong>Размечаем</strong><span>Модератор отмечает загрязнение прямоугольниками.</span></li>
+      <li><strong>Фиксируем</strong><span>Создаём неизменяемую версию датасета.</span></li>
+      <li><strong>Обучаем</strong><span>YOLO учится и проходит отдельные val/test-наборы.</span></li>
+      <li><strong>Разворачиваем</strong><span>ONNX включается только после проверки метрик.</span></li>
+    </ol>
+    <div class="ml-actions">
+      <form method="post" action="/web/ml/datasets">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button>Загрузить последние собранные данные</button>
+      </form>
+      <button type="button" class="secondary" onclick="downloadDataset()">Скачать текущий JSON</button>
+    </div>
+  </article>
+
+  <article class="panel">
+    <p class="eyebrow">ГОТОВНОСТЬ ДАННЫХ</p>
+    <h2>{{ "Можно запускать пилот" if readiness.ready else "Продолжаем сбор" }}</h2>
+    <div class="readiness-list">
+      {% for key, check in readiness.checks.items() %}
+      <div>
+        <span>{{ {"samples":"Проверенные фото","contamination_boxes":"Размеченные загрязнения","composters":"Разные компостеры"}[key] }}</span>
+        <strong class="{{ 'ready' if check.actual >= check.recommended else 'waiting' }}">{{ check.actual }} / {{ check.recommended }}</strong>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="muted">Это стартовые пороги для пилота, а не гарантия качества. Решение о выпуске принимается по recall загрязнений, ложным пропускам и тесту на новых компостерах.</p>
+  </article>
+</section>
+
+<section class="panel ml-control">
+  <div>
+    <p class="eyebrow">MODEL CONTROL</p>
+    <h2>Обучение и публикация</h2>
+    {% if deployed %}
+    <p class="muted">Активна модель запуска {{ deployed.id[:8] }} на dataset-v{{ deployed.dataset_version }} · {{ deployed.deployed_at }}</p>
+    {% else %}
+    <p class="muted">Обученная модель ещё не опубликована. Сервис использует прозрачную временную эвристику.</p>
+    {% endif %}
+  </div>
+  {% if latest_version %}
+  <form method="post" action="/web/ml/train">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="dataset_version" value="{{ latest_version.version }}">
+    <button {% if not readiness.ready or (runs and runs[0].status in ['QUEUED','RUNNING']) %}disabled{% endif %}>Запустить обучение dataset-v{{ latest_version.version }}</button>
+  </form>
+  {% else %}
+  <button disabled>Сначала загрузите данные</button>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-heading">
+    <div><p class="eyebrow">DATASET REGISTRY</p><h2>Зафиксированные версии</h2></div>
+    <span class="status ok">{{ versions|length }} версий</span>
+  </div>
+  <div class="dataset-list">
+    {% for version in versions %}
+    <article>
+      <div><strong>dataset-v{{ version.version }}</strong><small>{{ version.created_at }}</small></div>
+      <span>{{ version.sample_count }} фото</span>
+      <span>{{ version.annotated_count }} с разметкой</span>
+      <a href="/web/ml/datasets/{{ version.version }}.json">JSON ↓</a>
+    </article>
+    {% else %}
+    <p class="muted">Версий пока нет. Зафиксируйте первую после проверки разметки.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-heading">
+    <div><p class="eyebrow">TRAINING RUNS</p><h2>История обучения</h2></div>
+  </div>
+  <div class="dataset-list training-list">
+    {% for run in runs %}
+    <article>
+      <div><strong>{{ run.id[:8] }}</strong><small>dataset-v{{ run.dataset_version }} · {{ run.created_at }}</small></div>
+      <span class="status {{ 'ok' if run.status == 'PASSED' else 'off' if run.status in ['FAILED','REJECTED'] else 'warn' }}">{{ run.status }}</span>
+      <span>{% if run.completed_at %}{{ run.completed_at }}{% else %}ожидание{% endif %}</span>
+      {% if run.status == 'PASSED' %}
+      <form method="post" action="/web/ml/runs/{{ run.id }}/deploy"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Опубликовать</button></form>
+      {% elif run.error %}<small title="{{ run.error }}">Ошибка</small>{% else %}<span>—</span>{% endif %}
+    </article>
+    {% else %}
+    <p class="muted">Запусков обучения пока нет.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function downloadDataset() {
+  const data = {{ dataset|tojson }};
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([data], {type: 'application/json'}));
+  link.download = 'compost-dataset-current.json';
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+</script>
+{% endblock %}

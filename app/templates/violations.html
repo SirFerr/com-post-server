@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Нарушения и инциденты{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">КОНТРОЛЬ КАЧЕСТВА</p>
+    <h1>Нарушения и инциденты</h1>
+    <p class="muted">Единая очередь результатов модерации, загрязнений, неисправностей и задач оборудования.</p>
+  </div>
+  <div class="page-actions">
+    {% if actor.role.value in ['ADMIN','ENGINEER'] %}<button type="button" onclick="document.getElementById('create-incident').showModal()">Добавить</button>{% endif %}
+    <span class="counter">{{ violations|length }}</span>
+  </div>
+</header>
+{% if actor.role.value in ['ADMIN','ENGINEER'] %}
+<dialog id="create-incident" class="confirm-dialog incident-dialog">
+  <form method="post" action="/web/violations/create" enctype="multipart/form-data" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="wide"><p class="eyebrow">РУЧНАЯ ЗАПИСЬ</p><h2>Новое нарушение или инцидент</h2><p class="muted">Фото необязательно. Запись сразу появится в общей очереди.</p></div>
+    <label>Тип<select name="kind"><option value="CONTAMINATION">Загрязнение</option><option value="OVERFLOW">Переполнение</option><option value="LOCK">Замок</option><option value="DEVICE">Неисправность устройства</option><option value="MAINTENANCE">Обслуживание</option><option value="OTHER">Другое</option></select></label>
+    <label>Приоритет<select name="severity"><option value="LOW">Низкий</option><option value="MEDIUM" selected>Средний</option><option value="HIGH">Высокий</option><option value="CRITICAL">Критический</option></select></label>
+    <label class="wide">Компостер<select name="composter_id"><option value="">Без привязки</option>{% for composter in composters %}<option value="{{ composter.id }}">{{ composter.name }} · {{ composter.device_id }}</option>{% endfor %}</select></label>
+    <label class="wide">Заголовок<input name="title" minlength="3" maxlength="255" required placeholder="Что произошло"></label>
+    <label class="wide">Описание<textarea name="description" maxlength="5000" rows="4" placeholder="Подробности и необходимые действия"></textarea></label>
+    <label class="wide">Фото<input type="file" name="file" accept="image/*" capture="environment"></label>
+    <div class="dialog-actions wide"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Создать запись</button></div>
+  </form>
+</dialog>
+{% endif %}
+<div class="filters"><a class="{{ 'active' if status == 'ACTIVE' }}" href="?status=ACTIVE">Активные</a><a class="{{ 'active' if status == 'ALL' }}" href="?status=ALL">Все</a></div>
+<section class="violation-grid">
+{% for row in violations %}
+  <article class="violation-card clickable-card" data-card-href="/web/violations/{{ row.id }}" role="link" tabindex="0">
+    <a class="violation-photo" href="/web/violations/{{ row.id }}">
+      {% if row.photo_url %}<img src="{{ row.photo_url }}" alt="Фото нарушения" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="photo-placeholder" hidden>Фото недоступно</span>{% else %}<span class="photo-placeholder">Фото недоступно</span>{% endif %}
+    </a>
+    <div class="violation-body">
+      <div class="violation-main">
+        <div class="violation-title">
+          <span class="status {{ 'off' if row.active else 'ok' }}">{{ 'Активно' if row.active else 'Исправлено' }}</span>
+          <h2>
+            <a href="/web/violations/{{ row.id }}">{% if row.user %}{{ row.user.full_name or row.user.email }}
+            {% elif row.composter %}{{ row.composter.name }}
+            {% else %}Загрязнение оборудования{% endif %}</a>
+          </h2>
+        </div>
+        <p><a class="violation-reason" href="/web/violations/{{ row.id }}">{{ row.reason }}</a></p>
+      </div>
+      <div class="violation-details">
+        {% if row.user and row.composter %}<p class="muted">Компостер: <a href="/web/equipment/{{ row.composter.id }}">{{ row.composter.name }}</a></p>{% endif %}
+        <p class="muted">Источник: {% if row.source %}<a href="/web/users/{{ row.source.id }}">{{ row.source.full_name or row.source.email }}</a>{% else %}Система{% endif %}</p>
+        {% if row.resolver %}<p class="muted">Исправил: <a href="/web/users/{{ row.resolver.id }}">{{ row.resolver.full_name or row.resolver.email }}</a>{% if row.resolved_at %} · {{ row.resolved_at.strftime('%d.%m.%Y %H:%M') }}{% endif %}</p>{% endif %}
+        <small>{{ row.created_at.strftime('%d.%m.%Y %H:%M') }}</small>
+      </div>
+      {% if row.active and actor.role.value in ['ADMIN','ENGINEER'] %}
+      <form method="post" action="/web/violations/{{ row.id }}/resolve" onsubmit="return confirm('Подтвердить, что нарушение исправлено?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Исправлено</button>
+      </form>
+      {% endif %}
+    </div>
+  </article>
+{% else %}<div class="empty">Активных нарушений нет.</div>{% endfor %}
+</section>
+{% endblock %}

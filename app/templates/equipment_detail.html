@@ -14,13 +14,20 @@
 {% if actor.role.value in ['ADMIN','ENGINEER'] %}<section class="panel action-panel"><h2>Настройки оборудования</h2><form id="equipment-form" method="post" action="/web/equipment/{{ composter.id }}" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Название<input name="name" value="{{ composter.name }}" required></label><label>Широта<input name="latitude" type="number" step="any" value="{{ composter.latitude }}" required></label><label>Долгота<input name="longitude" type="number" step="any" value="{{ composter.longitude }}" required></label><label class="check"><input name="available" type="checkbox" value="true" {% if composter.is_available %}checked{% endif %}> Компостер включён</label><button type="button" onclick="document.getElementById('equipment-confirm').showModal()">Сохранить изменения</button><dialog id="equipment-confirm" class="confirm-dialog"><h2>Подтвердите изменения</h2><p>Введите пароль текущего аккаунта. Настройки применятся после подтверждения.</p><label>Пароль аккаунта<input name="current_password" type="password" minlength="8" required autocomplete="current-password"></label><div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Подтвердить</button></div></dialog></form></section>{% endif %}
 <section class="history user-history composter-history">
   <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Действия и фотографии оборудования</h2></div><span class="status">{{ history|length }}</span></div>
+  <div class="history-filters" data-history-filters>
+    <button type="button" class="history-filter selected" data-history-filter="ALL">Все</button>
+    <button type="button" class="history-filter" data-history-filter="ACCESS">Открытия</button>
+    <button type="button" class="history-filter" data-history-filter="FULL">Заполненность</button>
+    <button type="button" class="history-filter" data-history-filter="SETTINGS">Настройки</button>
+  </div>
   {% for item in history %}
-  <article class="clickable-card" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+  <article class="clickable-card" data-history-action="{{ item.action }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
     <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
     <div class="history-meta"><span>{% if item.actor %}<a href="/web/users/{{ item.actor.id }}">{{ item.actor.full_name or item.actor.email }}</a>{% else %}Система{% endif %}</span>{% if item.photo_url %}<button type="button" class="history-photo-link" onclick="document.getElementById('equipment-photo-{{ item.row.id }}').showModal()">Фото</button>{% endif %}</div>
   </div></article>
   {% if item.photo_url %}<dialog id="equipment-photo-{{ item.row.id }}" class="photo-dialog"><div class="annotation-stage history-stage" data-boxes='{{ item.annotations|tojson }}'><img src="{{ item.photo_url }}" alt="Фото оборудования"><canvas></canvas></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></dialog>{% endif %}
-  {% else %}<div class="empty">История пока пуста.</div>{% endfor %}
+  {% else %}<div class="empty history-empty">История пока пуста.</div>{% endfor %}
+  <div class="empty history-filter-empty" hidden>В этой категории событий пока нет.</div>
 </section>
 {% endblock %}
 {% block scripts %}<script>

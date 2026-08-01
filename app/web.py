@@ -51,7 +51,7 @@ def history_rows(db: Session, conditions) -> list[dict]:
             if incident and incident.photo_key:
                 media = {"photo_url": photo_url(incident.photo_key), "annotations": [], "composter": db.get(Composter, row.entity_id)}
         title, tag, tag_class = history_presentation(row.action)
-        result.append({"row": row, "actor": actors.get(row.user_id), "title": title, "tag": tag, "tag_class": tag_class, "created_at": row.created_at, "detail_url": f"/web/history/{row.id}", **media})
+        result.append({"row": row, "action": row.action, "actor": actors.get(row.user_id), "title": title, "tag": tag, "tag_class": tag_class, "created_at": row.created_at, "detail_url": f"/web/history/{row.id}", **media})
     return result
 
 
@@ -245,6 +245,7 @@ def user_detail(request: Request, user_id: str, error: str = Query(""), db: Sess
         composter = db.get(Composter, session.composter_id) if session else None
         history.append({
             "row": None,
+            "action": "SCORE_ADJUSTED",
             "score": item,
             "actor": transaction_actors.get(item.actor_id),
             "title": item.reason,

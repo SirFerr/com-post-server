@@ -45,8 +45,14 @@
 
 <section class="history user-history">
   <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Действия, проверки и фотографии</h2></div><span class="status">{{ history|length }}</span></div>
+  <div class="history-filters" data-history-filters>
+    <button type="button" class="history-filter selected" data-history-filter="ALL">Все</button>
+    <button type="button" class="history-filter" data-history-filter="POINTS">Баллы</button>
+    <button type="button" class="history-filter" data-history-filter="BANS">Блокировки</button>
+    <button type="button" class="history-filter" data-history-filter="ROLES">Роли</button>
+  </div>
   {% for item in history %}
-  <article class="clickable-card" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+  <article class="clickable-card" data-history-action="{{ item.action }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
     <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
     <div class="history-meta">
       {% if item.score %}<span class="score-change {{ 'positive' if item.score.amount > 0 else 'negative' }}"><strong>{{ '+' if item.score.amount > 0 else '' }}{{ item.score.amount }}</strong> → {{ item.score.balance_after }}</span>{% endif %}
@@ -56,7 +62,8 @@
     </div>
   </div></article>
   {% if item.photo_url %}<dialog id="history-photo-{{ history_id }}" class="photo-dialog"><div class="annotation-stage history-stage" data-boxes='{{ item.annotations|tojson }}'><img src="{{ item.photo_url }}" alt="Фото проверки"><canvas></canvas></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></dialog>{% endif %}
-  {% else %}<div class="empty">История пока пуста.</div>{% endfor %}
+  {% else %}<div class="empty history-empty">История пока пуста.</div>{% endfor %}
+  <div class="empty history-filter-empty" hidden>В этой категории событий пока нет.</div>
 </section>
 {% endblock %}
 {% block scripts %}<script>

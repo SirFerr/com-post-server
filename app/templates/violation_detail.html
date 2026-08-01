@@ -2,7 +2,7 @@
 {% set item = violation or incident %}
 {% block title %}{{ violation.reason if violation else incident.title }}{% endblock %}
 {% block content %}
-<a class="back" href="/web/violations">← Нарушения и инциденты</a>
+<a class="back" href="/web/violations">← Инциденты</a>
 <header class="page-header detail-page-header">
   <div><p class="eyebrow">{{ 'НАРУШЕНИЕ ПОЛЬЗОВАТЕЛЯ' if violation else 'ИНЦИДЕНТ' }}</p><h1>{{ violation.reason if violation else incident.title }}</h1><p class="muted">{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</p></div>
   <div class="page-actions"><span class="status {{ 'off' if (violation and violation.is_active) or (incident and incident.status in ['OPEN','IN_PROGRESS']) else 'ok' }}">{{ 'Активно' if (violation and violation.is_active) or (incident and incident.status in ['OPEN','IN_PROGRESS']) else 'Исправлено' }}</span>{% if actor.role.value in ['ADMIN','ENGINEER'] and ((violation and violation.is_active) or (incident and incident.status in ['OPEN','IN_PROGRESS'])) %}<form method="post" action="/web/violations/{{ item.id }}/resolve"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Исправлено</button></form>{% endif %}</div>

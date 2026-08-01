@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#D7FF39">
   <title>{% block title %}ComPost{% endblock %} · Панель</title>
-  <link rel="stylesheet" href="/static/admin.css?v=21">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/admin.css?v=23">
   <link rel="stylesheet" href="/static/review.css?v=11">
   {% block extra_head %}{% endblock %}
 </head>
@@ -16,6 +18,17 @@
 <script>
 document.addEventListener('click',event=>{const card=event.target.closest('[data-card-href]');if(card&&!event.target.closest('a,button,input,select,textarea,form,dialog'))location.href=card.dataset.cardHref;});
 document.addEventListener('keydown',event=>{const card=event.target.closest('[data-card-href]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();location.href=card.dataset.cardHref;}});
+document.querySelectorAll('[data-history-filters]').forEach(filters=>{
+  const history=filters.closest('.history'),rows=[...history.querySelectorAll('[data-history-action]')],empty=history.querySelector('.history-filter-empty');
+  filters.addEventListener('click',event=>{
+    const button=event.target.closest('[data-history-filter]');if(!button)return;
+    filters.querySelectorAll('[data-history-filter]').forEach(item=>item.classList.toggle('selected',item===button));
+    const filter=button.dataset.historyFilter;
+    let visible=0;
+    rows.forEach(row=>{const action=row.dataset.historyAction||'';const show=filter==='ALL'||(filter==='POINTS'&&(action.startsWith('REVIEW_')||action==='SCORE_ADJUSTED'))||(filter==='BANS'&&action.includes('BLOCK'))||(filter==='ROLES'&&action.includes('ROLE'))||(filter==='ACCESS'&&(action.includes('OPEN')||action.includes('CLOSE')))||(filter==='FULL'&&action.includes('FULL'))||(filter==='SETTINGS'&&!action.includes('OPEN')&&!action.includes('CLOSE')&&!action.includes('FULL'));row.hidden=!show;if(show)visible+=1;});
+    if(empty)empty.hidden=visible!==0||rows.length===0;
+  });
+});
 </script>
 {% block scripts %}{% endblock %}
 </body>

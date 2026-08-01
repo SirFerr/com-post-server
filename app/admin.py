@@ -197,21 +197,13 @@ def user_reviews(user_id: str, db: Session = Depends(get_db), _: User = Depends(
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
     confirm_password(actor, data.current_password)
+    if data.role is not None:
+        raise HTTPException(403, "Roles can only be changed from the web console")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     previous_role = user.role
     previous_blocked = user.is_blocked
-    if data.role is not None:
-        try:
-            requested_role = Role(data.role)
-        except ValueError:
-            raise HTTPException(422, "Unknown role")
-        if requested_role == Role.ADMIN:
-            raise HTTPException(403, "Administrator role can only be granted from the web console")
-        if user.role == Role.ADMIN:
-            raise HTTPException(403, "Administrator accounts can only be changed from the web console")
-        user.role = requested_role
     if data.is_blocked is not None:
         user.is_blocked = data.is_blocked
         user.ban_reason = data.ban_reason if data.is_blocked else None

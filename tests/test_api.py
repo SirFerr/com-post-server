@@ -3,6 +3,7 @@ import json
 import jwt
 
 from app import web
+from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, SessionStatus, StorageObjectAnnotation, User
@@ -155,6 +156,24 @@ def test_moderation_queue_contains_user_composter_and_time(client):
     assert row["created_at"]
 
 
+def test_moderation_history_returns_annotations_and_reviewer(client):
+    moderator = auth(token(client, "moderator@example.com"))
+    with SessionLocal() as db:
+        session = AccessSession(id="session-history", user_id="user-1", composter_id="composter-1")
+        db.add(session)
+        db.flush()
+        db.add(Review(id="review-history", session_id=session.id, photo_key="photo-history"))
+        db.commit()
+    boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "plastic"}]
+    result = client.post("/moderation/reviews/review-history", json={"approved": False, "violation_reason": "PLASTIC", "annotations": boxes}, headers=moderator)
+    assert result.status_code == 200
+    history = client.get("/moderation/history", headers=moderator)
+    assert history.status_code == 200
+    row = next(item for item in history.json() if item["id"] == "review-history")
+    assert row["annotations"] == boxes
+    assert row["reviewer_name"] == "moderator@example.com"
+
+
 def test_user_cannot_open_moderation_queue(client):
     assert client.get("/moderation/reviews", headers=auth(token(client))).status_code == 403
 
@@ -246,7 +265,7 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "/static/admin.css?v=21" in page.text
+    assert "/static/admin.css?v=23" in page.text
     assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
     assert "Последние действия" not in page.text
@@ -258,6 +277,9 @@ def test_staff_web_login_and_role_sections(client):
     equipment_detail = client.get("/web/equipment/composter-1")
     assert equipment_detail.status_code == 200
     assert "equipment-confirm" in equipment_detail.text
+    assert 'data-history-filter="ACCESS"' in equipment_detail.text
+    assert 'data-history-filter="FULL"' in equipment_detail.text
+    assert 'data-history-filter="SETTINGS"' in equipment_detail.text
     assert "Действия и фотографии оборудования" in equipment_detail.text
 
     users = client.get("/web/users")
@@ -267,8 +289,19 @@ def test_staff_web_login_and_role_sections(client):
     user_detail = client.get("/web/users/user-1")
     assert user_detail.status_code == 200
     assert "user-confirm" in user_detail.text
+    assert 'data-history-filter="POINTS"' in user_detail.text
+    assert 'data-history-filter="BANS"' in user_detail.text
+    assert 'data-history-filter="ROLES"' in user_detail.text
     assert "Действия, проверки и фотографии" in user_detail.text
     assert "Сессии компостирования" not in user_detail.text
+    role_change = client.post(
+        "/web/users/user-1",
+        data={"role": "MODERATOR", "current_password": "Password1!", "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert role_change.status_code == 303
+    with SessionLocal() as db:
+        assert db.get(User, "user-1").role.value == "MODERATOR"
     with SessionLocal() as db:
         db.add(AuditLog(entity="composter", entity_id="composter-1", action="COMPOSTER_UPDATED", user_id="admin-1"))
         db.commit()
@@ -295,6 +328,7 @@ def test_staff_web_login_and_role_sections(client):
     assert client.get("/static/vendor/leaflet.js").status_code == 200
     flasher = client.get("/web/flasher")
     assert flasher.status_code == 200
+    assert "зажмите кнопку при подключении ESP" in flasher.text
     assert "/static/vendor/esptool-js.js" in flasher.text
     assert client.get("/static/vendor/esptool-js.js").status_code == 200
 
@@ -335,16 +369,43 @@ def test_composter_onboarding_resume_is_idempotent(client):
     assert next(row for row in equipment if row["id"] == first.json()["id"])["is_available"] is True
 
 
-def test_android_user_history_records_actor_role_and_block_changes(client):
+def test_android_user_api_blocks_role_changes_and_records_block_changes(client):
     headers = auth(token(client, "admin@example.com"))
     role_change = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "role": "MODERATOR"}, headers=headers)
     block = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "is_blocked": True, "ban_reason": "Test"}, headers=headers)
-    assert role_change.status_code == 200
+    assert role_change.status_code == 403
+    assert role_change.json()["detail"] == "Roles can only be changed from the web console"
     assert block.status_code == 200
     history = client.get("/admin/users/user-1/history", headers=headers)
     assert history.status_code == 200
-    assert {row["action"] for row in history.json()} >= {"USER_ROLE_CHANGED", "USER_BLOCKED"}
+    assert {row["action"] for row in history.json()} >= {"USER_BLOCKED"}
+    assert "USER_ROLE_CHANGED" not in {row["action"] for row in history.json()}
     assert all(row["actor_email"] == "admin@example.com" for row in history.json())
+
+
+def test_engineer_cannot_change_user(client):
+    headers = auth(token(client, "engineer@example.com"))
+    response = client.patch("/admin/users/user-1", json={"current_password": "Password1!", "is_blocked": True}, headers=headers)
+    assert response.status_code == 403
+
+
+def test_mobile_storage_list_and_detail(client, monkeypatch):
+    class FakeStorage:
+        def list_objects_v2(self, **_):
+            return {"Contents": [{"Key": "test/deposits/photo.jpg", "Size": 2048, "LastModified": "2026-08-01T10:00:00Z"}]}
+
+        def head_object(self, **_):
+            return {"ContentLength": 2048, "LastModified": "2026-08-01T10:00:00Z", "ContentType": "image/jpeg", "ETag": '"abc"'}
+
+    monkeypatch.setattr(storage_api, "storage_client", lambda: FakeStorage())
+    headers = auth(token(client, "engineer@example.com"))
+    listing = client.get("/admin/storage", headers=headers)
+    assert listing.status_code == 200
+    assert listing.json()[0]["key"] == "test/deposits/photo.jpg"
+    detail = client.get("/admin/storage/object/test/deposits/photo.jpg", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["content_type"] == "image/jpeg"
+    assert client.get("/admin/storage", headers=auth(token(client))).status_code == 403
 
 
 def test_android_equipment_history_contains_access_and_full_report(client):

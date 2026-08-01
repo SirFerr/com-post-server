@@ -8,7 +8,7 @@
     {% if actor.role.value in ['ADMIN','MODERATOR'] %}<a class="{{ 'active' if active == 'moderation' }}" href="/web/moderation">Модерация <b>{{ stats.pending_reviews }}</b></a>{% endif %}
     <a class="{{ 'active' if active == 'map' }}" href="/web/map">Карта</a>
     {% if actor.role.value in ['ADMIN','ENGINEER'] %}<a class="{{ 'active' if active == 'storage' }}" href="/web/storage">S3-файлы</a>{% endif %}
-    {% if actor.role.value in ['ADMIN','ENGINEER','MODERATOR'] %}<a class="{{ 'active' if active == 'violations' }}" href="/web/violations">Нарушения и инциденты <b>{{ stats.active_violations }}</b></a>{% endif %}
+    {% if actor.role.value in ['ADMIN','ENGINEER','MODERATOR'] %}<a class="{{ 'active' if active == 'violations' }}" href="/web/violations">Инциденты <b>{{ stats.active_violations }}</b></a>{% endif %}
     {% if actor.role.value in ['ADMIN','ENGINEER'] %}<a class="{{ 'active' if active == 'flasher' }}" href="/web/flasher">Прошивка ESP</a>{% endif %}
     {% if actor.role.value == 'ADMIN' %}<a class="{{ 'active' if active == 'analytics' }}" href="/web/analytics">Аналитика</a>{% endif %}
     {% if actor.role.value == 'ADMIN' %}<a class="{{ 'active' if active == 'ml' }}" href="/web/ml">ML-контур</a>{% endif %}

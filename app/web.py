@@ -1,5 +1,4 @@
 import json
-import math
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -21,181 +20,13 @@ from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
 from .services import apply_violation, audit, photo_url, reward_review, store_photo
+from .web_support.security import csrf, generate_csrf, require_role
+from .web_support.storage import firmware_rows, firmware_s3, human_size, normalized_annotations, storage_file_label
+from .web_support.context import page_context
+from .web_support.history import history_presentation
 
 router = APIRouter(prefix="/web", include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-
-
-def csrf(request: Request, value: str) -> None:
-    if not value or not secrets.compare_digest(value, request.cookies.get("compost_csrf", "")):
-        raise HTTPException(403, "Invalid form token")
-
-
-def firmware_s3():
-    settings = get_settings()
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.firmware_s3_endpoint,
-        aws_access_key_id=settings.firmware_s3_access_key,
-        aws_secret_access_key=settings.firmware_s3_secret_key,
-    )
-
-
-def firmware_rows() -> list[dict]:
-    settings = get_settings()
-    client = firmware_s3()
-    result = []
-    for item in client.list_objects_v2(Bucket=settings.firmware_s3_bucket).get("Contents", []):
-        head = client.head_object(Bucket=settings.firmware_s3_bucket, Key=item["Key"])
-        result.append({
-            "key": item["Key"],
-            "name": Path(item["Key"]).name,
-            "size": item["Size"],
-            "updated_at": item["LastModified"],
-            "address": head.get("Metadata", {}).get("address", "0x10000"),
-            "chip": head.get("Metadata", {}).get("chip", "ESP32"),
-        })
-    return sorted(result, key=lambda row: row["updated_at"], reverse=True)
-
-
-def require_role(actor: User, *roles: Role) -> None:
-    if actor.role not in roles:
-        raise HTTPException(403, "Недостаточно прав")
-
-
-def human_size(value: int) -> str:
-    size = float(value)
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
-        if size < 1024 or unit == "ГБ":
-            return f"{size:.1f} {unit}" if unit != "Б" else f"{int(size)} Б"
-        size /= 1024
-    return f"{value} Б"
-
-
-def storage_file_label(key: str) -> str:
-    if key.startswith("deposits/"):
-        return "Фото закладки"
-    if key.startswith("engineering/"):
-        return "Инженерное фото"
-    if key.startswith("maintenance/"):
-        return "Фото обслуживания"
-    return "Изображение"
-
-
-def normalized_annotations(raw: str) -> list[dict]:
-    try:
-        values = json.loads(raw or "[]")
-    except json.JSONDecodeError as exc:
-        raise HTTPException(422, "Некорректная разметка") from exc
-    if not isinstance(values, list) or len(values) > 100:
-        raise HTTPException(422, "Некорректная разметка")
-    result = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise HTTPException(422, "Некорректная разметка")
-        try:
-            x, y, width, height = (float(value[key]) for key in ("x", "y", "width", "height"))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(422, "Некорректная разметка") from exc
-        if not all(math.isfinite(item) for item in (x, y, width, height)):
-            raise HTTPException(422, "Некорректная разметка")
-        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1.000001 or y + height > 1.000001:
-            raise HTTPException(422, "Координаты разметки выходят за границы изображения")
-        result.append({
-            "x": round(x, 6),
-            "y": round(y, 6),
-            "width": round(width, 6),
-            "height": round(height, 6),
-            "label": str(value.get("label") or "contamination")[:80],
-        })
-    return result
-
-
-def dashboard_stats(db: Session) -> dict:
-    return {
-        "users": db.scalar(select(func.count(User.id))) or 0,
-        "blocked_users": db.scalar(select(func.count(User.id)).where(User.is_blocked.is_(True))) or 0,
-        "composters": db.scalar(select(func.count(Composter.id))) or 0,
-        "available_composters": db.scalar(select(func.count(Composter.id)).where(Composter.is_available.is_(True))) or 0,
-        "full_composters": db.scalar(select(func.count(Composter.id)).where(Composter.needs_emptying.is_(True))) or 0,
-        "low_battery_composters": db.scalar(select(func.count(Composter.id)).where(Composter.battery_level <= 20)) or 0,
-        "pending_reviews": db.scalar(select(func.count(Review.id)).where(Review.status == ReviewStatus.PENDING)) or 0,
-        "active_violations": (db.scalar(select(func.count(Violation.id)).where(Violation.is_active.is_(True))) or 0)
-        + (db.scalar(select(func.count(Incident.id)).where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))) or 0),
-        "open_incidents": db.scalar(select(func.count(Incident.id)).where(Incident.status.in_(["OPEN", "IN_PROGRESS"]))) or 0,
-    }
-
-
-def page_context(request: Request, actor: User, db: Session, active: str, **values) -> dict:
-    return {
-        "actor": actor,
-        "stats": dashboard_stats(db),
-        "csrf_token": request.cookies.get("compost_csrf", ""),
-        "active": active,
-        **values,
-    }
-
-
-def history_presentation(action: str) -> tuple[str, str, str]:
-    titles = {
-        "REVIEW_APPROVED": "Загрузка одобрена",
-        "REVIEW_REJECTED": "Загрузка отклонена",
-        "USER_BLOCKED": "Пользователь заблокирован",
-        "USER_UNBLOCKED": "Пользователь разблокирован",
-        "USER_ROLE_CHANGED": "Роль пользователя изменена",
-        "ALL_SESSIONS_REVOKED": "Все сессии завершены",
-        "CONTAMINATION_REPORTED": "Выявлено загрязнение",
-        "VIOLATION_RESOLVED": "Нарушение исправлено",
-        "SCORE_ADJUSTED": "Баланс изменён",
-        "INCIDENT_CREATED": "Инцидент создан",
-        "INCIDENT_UPDATED": "Инцидент изменён",
-        "COMPOSTER_CREATED": "Компостер создан",
-        "COMPOSTER_UPDATED": "Настройки компостера изменены",
-        "COMPOSTER_DELETED": "Компостер удалён",
-        "MAINTENANCE_MODE_CHANGED": "Режим обслуживания изменён",
-        "MAINTENANCE_RECORDED": "Работа по обслуживанию записана",
-        "FULL_REPORTED": "Бак отмечен заполненным",
-        "FULL_REPORT_CLEARED": "Бак отмечен освобождённым",
-        "ENGINEERING_PHOTO_UPLOADED": "Инженерное фото загружено",
-        "STORAGE_ANNOTATIONS_UPDATED": "Разметка изображения обновлена",
-        "ML_DATASET_FROZEN": "Версия датасета зафиксирована",
-        "ML_TRAINING_QUEUED": "Обучение модели запущено",
-        "ML_MODEL_DEPLOYED": "Модель развёрнута",
-        "FIRMWARE_UPLOADED": "Прошивка добавлена",
-        "FIRMWARE_DELETED": "Прошивка удалена",
-        "WEB_FLASH_COMPLETED": "Прошивка ESP завершена",
-        "WEB_FLASH_FAILED": "Прошивка ESP завершилась ошибкой",
-        "DEBUG_OPEN_REQUESTED": "Запрошено открытие замка в отладке",
-        "DEBUG_CLOSE_REQUESTED": "Запрошено закрытие замка в отладке",
-        "OPEN_REQUESTED": "Запрошено открытие замка",
-        "CLOSE_REQUESTED": "Запрошено закрытие замка",
-        "PROVISIONING_RESUMED": "Настройка компостера продолжена",
-        "PROVISIONING_COMPLETED": "Настройка компостера завершена",
-        "TELEMETRY_RECORDED": "Телеметрия записана",
-        "PASSWORD_CHANGED": "Пароль изменён",
-        "USER_REGISTERED": "Пользователь зарегистрирован",
-        "USER_AUTO_BLOCKED": "Пользователь заблокирован автоматически",
-        "VIOLATION_CANCELLED": "Нарушение отменено",
-    }
-    if action.startswith("REVIEW_"):
-        return titles.get(action, action.replace("_", " ")), "Проверка", "review"
-    if action.startswith("USER_BLOCK") or action == "USER_UNBLOCKED":
-        return titles.get(action, action.replace("_", " ")), "Доступ", "access"
-    if "ROLE" in action:
-        return titles.get(action, action.replace("_", " ")), "Роль", "role"
-    if "CONTAMINATION" in action or "VIOLATION" in action:
-        return titles.get(action, action.replace("_", " ")), "Нарушение", "violation"
-    if "INCIDENT" in action or "MAINTENANCE" in action or "COMPOSTER" in action or "FULL_" in action or "DEBUG_" in action or action in {"OPEN_REQUESTED", "CLOSE_REQUESTED", "PROVISIONING_RESUMED", "PROVISIONING_COMPLETED", "TELEMETRY_RECORDED"}:
-        return titles.get(action, action.replace("_", " ")), "Оборудование", "equipment"
-    if "ML_" in action:
-        return titles.get(action, action.replace("_", " ")), "ML", "ml"
-    if "FIRMWARE" in action or "FLASH" in action:
-        return titles.get(action, action.replace("_", " ")), "Прошивка", "firmware"
-    if "PHOTO" in action or "STORAGE_" in action:
-        return titles.get(action, action.replace("_", " ")), "Файл", "storage"
-    if "SESSION" in action:
-        return titles.get(action, action.replace("_", " ")), "Сессии", "session"
-    return titles.get(action, action.replace("_", " ")), "Система", "system"
 
 
 def history_rows(db: Session, conditions) -> list[dict]:
@@ -280,7 +111,7 @@ def login_submit(request: Request, email: str = Form(), password: str = Form(), 
         return templates.TemplateResponse(request, "login.html", {"error": "Неверные данные или у аккаунта нет доступа к панели"}, status_code=401)
     response = RedirectResponse("/web/dashboard", 303)
     response.set_cookie("compost_session", create_token(user), httponly=True, samesite="strict", max_age=3600)
-    response.set_cookie("compost_csrf", secrets.token_urlsafe(24), httponly=True, samesite="strict", max_age=3600)
+    response.set_cookie("compost_csrf", generate_csrf(), httponly=True, samesite="strict", max_age=3600)
     return response
 
 

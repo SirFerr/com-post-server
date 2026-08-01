@@ -1,0 +1,18 @@
+{% macro status(text, tone='') -%}
+<span class="status {{ tone }}">{{ text }}</span>
+{%- endmacro %}
+
+{% macro empty_state(text) -%}
+<div class="empty">{{ text }}</div>
+{%- endmacro %}
+
+{% macro page_header(eyebrow, title, description='') -%}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">{{ eyebrow }}</p>
+    <h1>{{ title }}</h1>
+    {% if description %}<p class="muted">{{ description }}</p>{% endif %}
+  </div>
+  {{ caller() if caller is defined else '' }}
+</header>
+{%- endmacro %}

@@ -11,7 +11,7 @@ from .ml_dataset import freeze_dataset_version
 from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, UserScore, Violation
 from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, IncidentCreate, IncidentUpdate, MaintenanceCreate, MaintenanceModeRequest, PasswordConfirmation, ScoreAdjustment, TelemetryRequest, UserAdminUpdate
 from .security import require_roles, signed_command, verify_password
-from .services import audit, photo_url, store_photo
+from .services import audit, incident_title, photo_url, store_photo
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -263,7 +263,9 @@ def incidents(db: Session = Depends(get_db), _: User = Depends(require_roles(Rol
 def create_incident(data: IncidentCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
     if data.composter_id and not db.get(Composter, data.composter_id):
         raise HTTPException(404, "Composter not found")
-    row = Incident(**data.model_dump(exclude={"due_at"}), due_at=datetime.fromisoformat(data.due_at) if data.due_at else None, created_by=actor.id)
+    values = data.model_dump(exclude={"due_at"})
+    values["title"] = data.title.strip() or incident_title(data.kind)
+    row = Incident(**values, due_at=datetime.fromisoformat(data.due_at) if data.due_at else None, created_by=actor.id)
     db.add(row)
     db.flush()
     audit(db, actor, "incident", row.id, "INCIDENT_CREATED", {"severity": row.severity, "kind": row.kind})
@@ -276,7 +278,7 @@ def report_incident(
     composter_id: str = Form(""),
     kind: str = Form("CONTAMINATION"),
     severity: str = Form("MEDIUM"),
-    title: str = Form("Выявлено нарушение"),
+    title: str = Form(""),
     description: str = Form(""),
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
@@ -287,7 +289,7 @@ def report_incident(
         raise HTTPException(404, "Composter not found")
     kind = kind.strip().upper()
     severity = severity.strip().upper()
-    title = title.strip()
+    title = title.strip() or incident_title(kind)
     description = description.strip()
     if len(kind) < 2 or len(kind) > 80 or severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
         raise HTTPException(422, "Invalid incident fields")

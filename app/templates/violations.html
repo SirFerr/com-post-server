@@ -20,8 +20,7 @@
     <label>Тип<select name="kind"><option value="CONTAMINATION">Загрязнение</option><option value="OVERFLOW">Переполнение</option><option value="LOCK">Замок</option><option value="DEVICE">Неисправность устройства</option><option value="MAINTENANCE">Обслуживание</option><option value="OTHER">Другое</option></select></label>
     <label>Приоритет<select name="severity"><option value="LOW">Низкий</option><option value="MEDIUM" selected>Средний</option><option value="HIGH">Высокий</option><option value="CRITICAL">Критический</option></select></label>
     <label class="wide">Компостер<select name="composter_id"><option value="">Без привязки</option>{% for composter in composters %}<option value="{{ composter.id }}">{{ composter.name }} · {{ composter.device_id }}</option>{% endfor %}</select></label>
-    <label class="wide">Заголовок<input name="title" minlength="3" maxlength="255" required placeholder="Что произошло"></label>
-    <label class="wide">Описание<textarea name="description" maxlength="5000" rows="4" placeholder="Подробности и необходимые действия"></textarea></label>
+    <label class="wide">Комментарий <small>необязательно</small><textarea name="description" maxlength="5000" rows="4" placeholder="Подробности и необходимые действия"></textarea></label>
     <label class="wide">Фото<input type="file" name="file" accept="image/*" capture="environment"></label>
     <div class="dialog-actions wide"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Создать запись</button></div>
   </form>

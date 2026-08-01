@@ -19,7 +19,7 @@ from .config import get_settings
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
-from .services import apply_violation, audit, photo_url, reward_review, store_photo
+from .services import apply_violation, audit, incident_title, photo_url, reward_review, store_photo
 from .web_support.security import csrf, generate_csrf, require_role
 from .web_support.storage import firmware_rows, firmware_s3, human_size, normalized_annotations, storage_file_label
 from .web_support.context import page_context
@@ -773,7 +773,6 @@ def create_violation_web(
     composter_id: str = Form(""),
     kind: str = Form("CONTAMINATION"),
     severity: str = Form("MEDIUM"),
-    title: str = Form(),
     description: str = Form(""),
     file: UploadFile | None = File(None),
     csrf_token: str = Form(),
@@ -787,7 +786,7 @@ def create_violation_web(
         raise HTTPException(404, "Composter not found")
     kind = kind.strip().upper()
     severity = severity.strip().upper()
-    title = title.strip()
+    title = incident_title(kind)
     description = description.strip()
     if len(kind) < 2 or len(kind) > 80 or severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
         raise HTTPException(422, "Некорректный тип или приоритет")

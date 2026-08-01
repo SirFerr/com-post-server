@@ -82,7 +82,7 @@ class IncidentCreate(BaseModel):
     composter_id: str | None = None
     kind: str = Field(min_length=2, max_length=80)
     severity: str = Field(default="MEDIUM", pattern="^(LOW|MEDIUM|HIGH|CRITICAL)$")
-    title: str = Field(min_length=3, max_length=255)
+    title: str = Field(default="", max_length=255)
     description: str = Field(default="", max_length=5000)
     assigned_to: str | None = None
     due_at: str | None = None

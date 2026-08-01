@@ -1,15 +1,15 @@
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AccessSession, Composter, DeviceCommand, Review, Role, SessionStatus, User
+from ..models import AccessSession, Composter, DeviceCommand, Incident, Review, Role, SessionStatus, User
 from ..schemas import AccessRequest, CommandAck
 from ..security import current_user, signed_command
-from ..services import audit, distance_m, request_ml_review, store_photo
+from ..services import audit, distance_m, incident_title, photo_url, request_ml_review, store_photo
 from .dependencies import require_container_access
 
 router = APIRouter()
@@ -43,6 +43,42 @@ def report_full(composter_id: str, db: Session = Depends(get_db), actor: User = 
     audit(db, actor, "composter", composter.id, "FULL_REPORTED")
     db.commit()
     return {"status": "reported"}
+
+
+@router.post("/composters/{composter_id}/incident-report")
+def report_incident(
+    composter_id: str,
+    comment: str = Form(""),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    actor: User = Depends(current_user),
+):
+    require_container_access(actor, db)
+    composter = db.get(Composter, composter_id)
+    if not composter:
+        raise HTTPException(404, "Composter not found")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(415, "Only images are accepted")
+    comment = comment.strip()
+    if len(comment) > 5000:
+        raise HTTPException(422, "Comment is too long")
+    photo_key = store_photo(file)
+    incident = Incident(
+        composter_id=composter.id,
+        kind="USER_REPORT",
+        severity="MEDIUM",
+        title=incident_title("USER_REPORT"),
+        description=comment,
+        photo_key=photo_key,
+        created_by=actor.id,
+    )
+    db.add(incident)
+    db.flush()
+    details = {"incident_id": incident.id, "kind": incident.kind, "photo_key": photo_key}
+    audit(db, actor, "incident", incident.id, "INCIDENT_CREATED", details)
+    audit(db, actor, "composter", composter.id, "INCIDENT_CREATED", details)
+    db.commit()
+    return {"id": incident.id, "status": incident.status, "photo_url": photo_url(photo_key)}
 
 
 @router.post("/composters/{composter_id}/access")

@@ -436,6 +436,7 @@ def test_refresh_tokens_rotate_and_sessions_can_be_revoked(client):
 def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     admin = auth(token(client, "admin@example.com"))
     engineer = auth(token(client, "engineer@example.com"))
+    user = auth(token(client))
     incident = client.post("/admin/incidents", json={"composter_id": "composter-1", "kind": "LOCK", "severity": "HIGH", "title": "Замок не отвечает"}, headers=engineer)
     assert incident.status_code == 200
     incident_id = incident.json()["id"]
@@ -456,14 +457,38 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert reported["kind"] == "CONTAMINATION"
     assert reported["source_name"] == "engineer@example.com"
     assert reported["photo_url"]
+    assert client.post(
+        "/composters/composter-1/incident-report",
+        data={"comment": "Повреждена крышка"},
+        headers=user,
+    ).status_code == 422
+    user_report = client.post(
+        "/composters/composter-1/incident-report",
+        data={"comment": "Повреждена крышка"},
+        files={"file": ("user-report.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
+        headers=user,
+    )
+    assert user_report.status_code == 200
+    assert user_report.json()["photo_url"]
+    active = client.get("/admin/violations", headers=engineer).json()
+    user_reported = next(row for row in active if row["id"] == user_report.json()["id"])
+    assert user_reported["kind"] == "USER_REPORT"
+    assert user_reported["source_name"] == "user@example.com"
     manual = client.post(
         "/admin/incidents/report",
-        data={"composter_id": "composter-1", "kind": "DEVICE", "severity": "HIGH", "title": "Ручной инцидент", "description": "Создан из формы"},
+        data={"composter_id": "composter-1", "kind": "DEVICE", "severity": "HIGH", "description": "Создан из формы"},
         files={"file": ("manual.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
         headers=engineer,
     )
     assert manual.status_code == 200
     assert manual.json()["photo_url"]
+    without_photo = client.post(
+        "/admin/incidents/report",
+        data={"composter_id": "composter-1", "kind": "OTHER", "severity": "LOW", "description": "Только комментарий"},
+        headers=engineer,
+    )
+    assert without_photo.status_code == 200
+    assert without_photo.json()["photo_url"] is None
     assert client.post(f"/admin/violations/{reported['id']}/resolve", headers=engineer).status_code == 200
     history = client.get("/admin/violations?active_only=false", headers=engineer).json()
     resolved = next(row for row in history if row["id"] == reported["id"])
@@ -484,7 +509,7 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
     violation_detail = client.get(f"/web/violations/{manual.json()['id']}")
     assert violation_detail.status_code == 200
-    assert "Ручной инцидент" in violation_detail.text
+    assert "Неисправность устройства" in violation_detail.text
     with SessionLocal() as db:
         manual_row = db.get(Incident, manual.json()["id"])
         assert manual_row and manual_row.photo_key

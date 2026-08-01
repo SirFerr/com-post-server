@@ -234,28 +234,60 @@ def user_detail(request: Request, user_id: str, error: str = Query(""), db: Sess
     if review_ids:
         conditions.append(and_(AuditLog.entity == "review", AuditLog.entity_id.in_(review_ids)))
     score = db.get(UserScore, user.id)
-    transactions = list(db.scalars(select(ScoreTransaction).where(ScoreTransaction.user_id == user.id).order_by(ScoreTransaction.created_at.desc()).limit(100)).all())
+    transactions = list(db.scalars(select(ScoreTransaction).where(ScoreTransaction.user_id == user.id).order_by(ScoreTransaction.created_at.desc())).all())
     history = history_rows(db, conditions)
-    transaction_actor_ids = {item.actor_id for item in transactions if item.actor_id}
-    transaction_actors = {item.id: item for item in db.scalars(select(User).where(User.id.in_(transaction_actor_ids))).all()} if transaction_actor_ids else {}
     review_map = {review.id: review for review in reviews}
-    for item in transactions:
-        review = review_map.get(item.review_id)
+    transaction_review_ids = {item.review_id for item in transactions if item.review_id}
+    legacy_reviews = [review for review in reviews if review.status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED) and review.id not in transaction_review_ids]
+    score_actor_ids = {item.actor_id for item in transactions if item.actor_id} | {review.reviewed_by for review in legacy_reviews if review.reviewed_by}
+    score_actors = {item.id: item for item in db.scalars(select(User).where(User.id.in_(score_actor_ids))).all()} if score_actor_ids else {}
+    review_audits = {
+        item["row"].entity_id: item
+        for item in history
+        if item["row"].entity == "review" and item["action"] in ("REVIEW_APPROVED", "REVIEW_REJECTED")
+    }
+    score_events = [(item.created_at, "transaction", item) for item in transactions]
+    score_events.extend((review.reviewed_at or review.created_at, "legacy", review) for review in legacy_reviews)
+    running_balance = 0
+    for _, event_kind, event in sorted(score_events, key=lambda row: row[0]):
+        if event_kind == "transaction":
+            item = event
+            running_balance = item.balance_after
+            amount = item.amount
+            review = review_map.get(item.review_id)
+            event_actor = score_actors.get(item.actor_id)
+            title = item.reason
+            detail_url = f"/web/score-transactions/{item.id}"
+        else:
+            review = event
+            previous_balance = running_balance
+            running_balance = previous_balance + 10 if review.status == ReviewStatus.APPROVED else max(0, previous_balance - 15)
+            amount = running_balance - previous_balance
+            audit_item = review_audits.get(review.id)
+            item = {
+                "id": f"legacy-{review.id}",
+                "amount": amount,
+                "balance_after": running_balance,
+            }
+            event_actor = audit_item["actor"] if audit_item else score_actors.get(review.reviewed_by)
+            title = "Загрузка одобрена" if review.status == ReviewStatus.APPROVED else "Загрузка отклонена"
+            detail_url = audit_item["detail_url"] if audit_item else f"/web/deposits/{review.session_id}"
         session = db.get(AccessSession, review.session_id) if review else None
         composter = db.get(Composter, session.composter_id) if session else None
         history.append({
             "row": None,
             "action": "SCORE_ADJUSTED",
+            "category": "POINTS",
             "score": item,
-            "actor": transaction_actors.get(item.actor_id),
-            "title": item.reason,
+            "actor": event_actor,
+            "title": title,
             "tag": "Баллы",
-            "tag_class": "score-positive" if item.amount > 0 else "score-negative",
-            "created_at": item.created_at,
+            "tag_class": "score-positive" if amount > 0 else "score-negative",
+            "created_at": review_audits.get(review.id, {}).get("created_at", review.reviewed_at or review.created_at) if event_kind == "legacy" else item.created_at,
             "photo_url": photo_url(review.photo_key) if review else None,
             "annotations": json.loads(review.annotations or "[]") if review else [],
             "composter": composter,
-            "detail_url": f"/web/score-transactions/{item.id}",
+            "detail_url": detail_url,
         })
     history.sort(key=lambda item: item["created_at"], reverse=True)
     return templates.TemplateResponse(request, "user_detail.html", page_context(request, actor, db, "users", user=user, history=history, reviews=review_rows, roles=list(Role), score=score, error=error))

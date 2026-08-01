@@ -6,7 +6,7 @@ from app import web
 from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, SessionStatus, StorageObjectAnnotation, User
+from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User
 from tests.conftest import token
 
 
@@ -334,6 +334,26 @@ def test_staff_web_login_and_role_sections(client):
     assert client.get("/static/vendor/esptool-js.js").status_code == 200
 
 
+def test_web_points_filter_includes_legacy_rewards_but_not_review_cards(client):
+    with SessionLocal() as db:
+        session = AccessSession(id="legacy-score-session", user_id="user-1", composter_id="composter-1")
+        db.add(session)
+        db.flush()
+        review = Review(id="legacy-score-review", session_id=session.id, status=ReviewStatus.APPROVED, photo_key="legacy-score.jpg")
+        db.add(review)
+        db.flush()
+        db.add(AuditLog(entity="review", entity_id=review.id, action="REVIEW_APPROVED"))
+        db.commit()
+
+    assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
+    page = client.get("/web/users/user-1")
+    assert page.status_code == 200
+    assert 'data-history-category="POINTS"' in page.text
+    assert '<strong>+10</strong> → 10' in page.text
+    assert "filter==='POINTS'&&category==='POINTS'" in page.text
+    assert "action.startsWith('REVIEW_')" not in page.text
+
+
 def test_regular_user_cannot_open_staff_web(client):
     login = client.post("/web/login", data={"email": "user@example.com", "password": "Password1!"})
     assert login.status_code == 401
@@ -459,12 +479,18 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert reported["photo_url"]
     assert client.post(
         "/composters/composter-1/incident-report",
-        data={"comment": "Повреждена крышка"},
+        data={"comment": "Повреждена крышка", "latitude": 55.75, "longitude": 37.61},
         headers=user,
     ).status_code == 422
+    assert client.post(
+        "/composters/composter-1/incident-report",
+        data={"kind": "LOCK", "comment": "Далеко", "latitude": 55.76, "longitude": 37.61},
+        files={"file": ("far-report.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
+        headers=user,
+    ).status_code == 403
     user_report = client.post(
         "/composters/composter-1/incident-report",
-        data={"comment": "Повреждена крышка"},
+        data={"kind": "LOCK", "comment": "Повреждена крышка", "latitude": 55.75, "longitude": 37.61},
         files={"file": ("user-report.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
         headers=user,
     )
@@ -472,7 +498,7 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert user_report.json()["photo_url"]
     active = client.get("/admin/violations", headers=engineer).json()
     user_reported = next(row for row in active if row["id"] == user_report.json()["id"])
-    assert user_reported["kind"] == "USER_REPORT"
+    assert user_reported["kind"] == "LOCK"
     assert user_reported["source_name"] == "user@example.com"
     manual = client.post(
         "/admin/incidents/report",
@@ -531,7 +557,8 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert object_detail.status_code == 200
     assert object_key in object_detail.text
     assert 'id="storage-annotation-dialog"' in object_detail.text
-    assert 'data-box-action="move"' in object_detail.text
+    assert 'data-box-action="move"' not in object_detail.text
+    assert "const hitBorder" in object_detail.text
     assert "Убрать всю разметку с изображения?" in object_detail.text
     csrf_token = client.cookies.get("compost_csrf")
     boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "contamination"}]

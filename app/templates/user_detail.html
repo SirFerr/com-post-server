@@ -52,7 +52,7 @@
     <button type="button" class="history-filter" data-history-filter="ROLES">Роли</button>
   </div>
   {% for item in history %}
-  <article class="clickable-card" data-history-action="{{ item.action }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+  <article class="clickable-card" data-history-action="{{ item.action }}" data-history-category="{{ item.category or '' }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
     <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
     <div class="history-meta">
       {% if item.score %}<span class="score-change {{ 'positive' if item.score.amount > 0 else 'negative' }}"><strong>{{ '+' if item.score.amount > 0 else '' }}{{ item.score.amount }}</strong> → {{ item.score.balance_after }}</span>{% endif %}

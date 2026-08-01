@@ -80,7 +80,7 @@ if(viewStage){
   const savedBoxes=JSON.parse(viewStage.dataset.boxes||'[]');
   const controls=document.createElement('div');
   controls.className='box-controls';
-  controls.innerHTML='<button type="button" data-box-action="move" title="Переместить рамку" aria-label="Переместить">✥</button><button type="button" data-box-action="delete" title="Удалить рамку" aria-label="Удалить">×</button>';
+  controls.innerHTML='<button type="button" data-box-action="delete" title="Удалить рамку" aria-label="Удалить">×</button>';
   stage.appendChild(controls);
   let boxes=savedBoxes.map(box=>({...box})),selected=-1,hovered=-1,drag=null;
   const clamp=(value,min=0,max=1)=>Math.max(min,Math.min(max,value));
@@ -89,6 +89,16 @@ if(viewStage){
     for(let index=boxes.length-1;index>=0;index--){
       const box=boxes[index];
       if(p.x>=box.x&&p.x<=box.x+box.width&&p.y>=box.y&&p.y<=box.y+box.height)return index;
+    }
+    return -1;
+  };
+  const hitBorder=p=>{
+    const toleranceX=8/canvas.width,toleranceY=8/canvas.height;
+    for(let index=boxes.length-1;index>=0;index--){
+      const box=boxes[index],right=box.x+box.width,bottom=box.y+box.height;
+      const insideX=p.x>=box.x-toleranceX&&p.x<=right+toleranceX;
+      const insideY=p.y>=box.y-toleranceY&&p.y<=bottom+toleranceY;
+      if((insideY&&(Math.abs(p.x-box.x)<=toleranceX||Math.abs(p.x-right)<=toleranceX))||(insideX&&(Math.abs(p.y-box.y)<=toleranceY||Math.abs(p.y-bottom)<=toleranceY)))return index;
     }
     return -1;
   };
@@ -157,15 +167,17 @@ if(viewStage){
     positionControls();
   }
   canvas.addEventListener('pointerdown',event=>{
-    const p=point(event),handle=hitHandle(p),hit=hitBox(p);
+    const p=point(event),handle=hitHandle(p),border=hitBorder(p),hit=hitBox(p);
     canvas.setPointerCapture(event.pointerId);
     if(handle){
       drag={type:'resize',handle,index:selected,start:p,original:{...boxes[selected]}};
-    }else if(hit>=0){
-      selected=hit;
-      drag={type:'move',index:hit,start:p,original:{...boxes[hit]}};
+    }else if(border>=0){
+      selected=border;
+      drag={type:'move',index:border,start:p,original:{...boxes[border]}};
       canvas.style.cursor='grabbing';
       render();
+    }else if(hit>=0){
+      selected=hit;drag=null;render();
     }else{
       selected=-1;drag={type:'draw',start:p};render();
     }
@@ -175,7 +187,8 @@ if(viewStage){
     if(!drag){
       hovered=hitBox(p);
       const handle=hitHandle(p);
-      canvas.style.cursor=handle?`${handle}-resize`:hovered>=0?'grab':'crosshair';
+      const border=hitBorder(p);
+      canvas.style.cursor=handle?`${handle}-resize`:border>=0?'grab':hovered>=0?'pointer':'crosshair';
       positionControls();
       return;
     }
@@ -202,7 +215,7 @@ if(viewStage){
       const p=point(event),box={x:Math.min(drag.start.x,p.x),y:Math.min(drag.start.y,p.y),width:Math.abs(p.x-drag.start.x),height:Math.abs(p.y-drag.start.y),label:'contamination'};
       if(box.width>.01&&box.height>.01){boxes.push(box);selected=boxes.length-1;}
     }
-    drag=null;canvas.style.cursor=selected>=0?'grab':'crosshair';render();syncEditor();
+    drag=null;canvas.style.cursor='crosshair';render();syncEditor();
   });
   controls.addEventListener('pointerdown',event=>event.stopPropagation());
   controls.querySelector('[data-box-action="delete"]').addEventListener('click',()=>{
@@ -211,26 +224,6 @@ if(viewStage){
     boxes.splice(index,1);
     selected=-1;hovered=-1;render();syncEditor();
   });
-  const moveButton=controls.querySelector('[data-box-action="move"]');
-  moveButton.addEventListener('pointerdown',event=>{
-    event.preventDefault();event.stopPropagation();
-    const index=selected>=0?selected:hovered;
-    if(index<0||!boxes[index])return;
-    selected=index;drag={type:'move',index,start:point(event),original:{...boxes[index]}};
-    moveButton.setPointerCapture(event.pointerId);moveButton.classList.add('active');render();
-  });
-  moveButton.addEventListener('pointermove',event=>{
-    if(!drag||drag.type!=='move')return;
-    const p=point(event),box=drag.original;
-    boxes[drag.index]={...box,x:clamp(box.x+p.x-drag.start.x,0,1-box.width),y:clamp(box.y+p.y-drag.start.y,0,1-box.height)};
-    render();
-  });
-  const stopMoving=()=>{
-    if(!drag||drag.type!=='move')return;
-    drag=null;moveButton.classList.remove('active');render();syncEditor();
-  };
-  moveButton.addEventListener('pointerup',stopMoving);
-  moveButton.addEventListener('pointercancel',stopMoving);
   visible.addEventListener('change',()=>{viewCanvas.hidden=!visible.checked;if(visible.checked)draw(viewContext,viewCanvas,savedBoxes);});
   stage.querySelector('[data-action="undo"]').addEventListener('click',()=>{boxes.pop();selected=-1;hovered=-1;render();syncEditor();});
   stage.querySelector('[data-action="clear"]').addEventListener('click',()=>{if(!boxes.length||!confirm('Убрать всю разметку с изображения?'))return;boxes=[];selected=-1;hovered=-1;render();syncEditor();});

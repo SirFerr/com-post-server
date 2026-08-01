@@ -48,7 +48,10 @@ def report_full(composter_id: str, db: Session = Depends(get_db), actor: User = 
 @router.post("/composters/{composter_id}/incident-report")
 def report_incident(
     composter_id: str,
+    kind: str = Form("OTHER"),
     comment: str = Form(""),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     actor: User = Depends(current_user),
@@ -57,6 +60,11 @@ def report_incident(
     composter = db.get(Composter, composter_id)
     if not composter:
         raise HTTPException(404, "Composter not found")
+    if distance_m(latitude, longitude, composter.latitude, composter.longitude) > 50:
+        raise HTTPException(403, "User is farther than 50 meters from the composter")
+    kind = kind.strip().upper()
+    if kind not in {"CONTAMINATION", "OVERFLOW", "LOCK", "DEVICE", "MAINTENANCE", "OTHER"}:
+        raise HTTPException(422, "Unsupported incident type")
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(415, "Only images are accepted")
     comment = comment.strip()
@@ -65,16 +73,16 @@ def report_incident(
     photo_key = store_photo(file)
     incident = Incident(
         composter_id=composter.id,
-        kind="USER_REPORT",
+        kind=kind,
         severity="MEDIUM",
-        title=incident_title("USER_REPORT"),
+        title=incident_title(kind),
         description=comment,
         photo_key=photo_key,
         created_by=actor.id,
     )
     db.add(incident)
     db.flush()
-    details = {"incident_id": incident.id, "kind": incident.kind, "photo_key": photo_key}
+    details = {"incident_id": incident.id, "kind": incident.kind, "photo_key": photo_key, "latitude": latitude, "longitude": longitude}
     audit(db, actor, "incident", incident.id, "INCIDENT_CREATED", details)
     audit(db, actor, "composter", composter.id, "INCIDENT_CREATED", details)
     db.commit()

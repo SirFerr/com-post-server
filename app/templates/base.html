@@ -25,7 +25,7 @@ document.querySelectorAll('[data-history-filters]').forEach(filters=>{
     filters.querySelectorAll('[data-history-filter]').forEach(item=>item.classList.toggle('selected',item===button));
     const filter=button.dataset.historyFilter;
     let visible=0;
-    rows.forEach(row=>{const action=row.dataset.historyAction||'';const show=filter==='ALL'||(filter==='POINTS'&&(action.startsWith('REVIEW_')||action==='SCORE_ADJUSTED'))||(filter==='BANS'&&action.includes('BLOCK'))||(filter==='ROLES'&&action.includes('ROLE'))||(filter==='ACCESS'&&(action.includes('OPEN')||action.includes('CLOSE')))||(filter==='FULL'&&action.includes('FULL'))||(filter==='SETTINGS'&&!action.includes('OPEN')&&!action.includes('CLOSE')&&!action.includes('FULL'));row.hidden=!show;if(show)visible+=1;});
+    rows.forEach(row=>{const action=row.dataset.historyAction||'',category=row.dataset.historyCategory||'';const show=filter==='ALL'||(filter==='POINTS'&&category==='POINTS')||(filter==='BANS'&&action.includes('BLOCK'))||(filter==='ROLES'&&action.includes('ROLE'))||(filter==='ACCESS'&&(action.includes('OPEN')||action.includes('CLOSE')))||(filter==='FULL'&&action.includes('FULL'))||(filter==='SETTINGS'&&!action.includes('OPEN')&&!action.includes('CLOSE')&&!action.includes('FULL'));row.hidden=!show;if(show)visible+=1;});
     if(empty)empty.hidden=visible!==0||rows.length===0;
   });
 });

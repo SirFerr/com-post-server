@@ -62,22 +62,26 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
         raise HTTPException(404, "Review not found")
     if review.status != ReviewStatus.PENDING:
         return {"status": review.status}
+    if data.create_incident and not data.approved:
+        raise HTTPException(422, "An incident cannot be combined with a contamination rejection")
     review.status = ReviewStatus.APPROVED if data.approved else ReviewStatus.REJECTED
     comment = (data.comment or "").strip()
-    review.comment = comment or (None if data.approved else "Обнаружено нарушение")
+    review.comment = (comment or None) if data.create_incident else (None if data.approved else "Обнаружено загрязнение")
     review.annotations = json.dumps(data.annotations, ensure_ascii=False)
     review.reviewed_by = moderator.id
     review.reviewed_at = datetime.now(timezone.utc)
     session = db.get(AccessSession, review.session_id)
     user = db.get(User, session.user_id)
-    if not data.approved:
+    if data.create_incident:
         try:
-            create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.comment, review.id)
+            incident = create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.comment, review.id, review.photo_key)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        if incident is None:
+            raise HTTPException(422, "Incident type is required")
     was_blocked = user.is_blocked
     if not data.approved:
-        review.violation_reason = (data.incident_kind or data.violation_reason or "INVALID_COMPOST").strip().upper()
+        review.violation_reason = "CONTAMINATION"
         apply_violation(db, review, session, review.violation_reason)
         if not was_blocked and user.is_blocked:
             audit(db, moderator, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})

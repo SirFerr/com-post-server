@@ -1023,29 +1023,33 @@ async def flasher_audit(request: Request, db: Session = Depends(get_db), actor: 
 
 
 @router.post("/reviews/{review_id}")
-def moderate_review(request: Request, review_id: str, approved: bool = Form(), comment: str = Form(""), incident_kind: str = Form(""), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def moderate_review(request: Request, review_id: str, action: str = Form(), comment: str = Form(""), incident_kind: str = Form(""), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     require_role(actor, Role.ADMIN, Role.MODERATOR)
+    if action not in {"APPROVE", "CONTAMINATION", "INCIDENT"}:
+        raise HTTPException(422, "Unknown moderation action")
+    approved = action != "CONTAMINATION"
+    create_incident = action == "INCIDENT"
     review = db.get(Review, review_id)
     if review and review.status == ReviewStatus.PENDING:
         review.status = ReviewStatus.APPROVED if approved else ReviewStatus.REJECTED
-        review.comment = comment.strip() or (None if approved else "Обнаружено нарушение")
+        review.comment = (comment.strip() or None) if create_incident else (None if approved else "Обнаружено загрязнение")
         boxes = normalized_annotations(annotations)
         review.annotations = json.dumps(boxes, ensure_ascii=False)
         review.reviewed_by = actor.id
         review.reviewed_at = datetime.now(timezone.utc)
         session = db.get(AccessSession, review.session_id)
         user = db.get(User, session.user_id)
-        if not approved:
+        if create_incident:
             try:
-                incident = create_moderation_incident(db, actor, session.composter_id, incident_kind, comment, review.id)
+                incident = create_moderation_incident(db, actor, session.composter_id, incident_kind, comment, review.id, review.photo_key)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             if incident is None:
                 raise HTTPException(422, "Incident type is required")
         was_blocked = user.is_blocked
         if not approved:
-            review.violation_reason = incident_kind.strip().upper()
+            review.violation_reason = "CONTAMINATION"
             apply_violation(db, review, session, review.violation_reason)
             if not was_blocked and user.is_blocked:
                 audit(db, actor, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})

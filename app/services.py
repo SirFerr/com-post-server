@@ -26,10 +26,10 @@ def incident_title(kind: str) -> str:
     return INCIDENT_TITLES.get(kind.strip().upper(), "Инцидент")
 
 
-MODERATION_INCIDENT_KINDS = frozenset(INCIDENT_TITLES) - {"USER_REPORT"}
+MODERATION_INCIDENT_KINDS = frozenset(INCIDENT_TITLES) - {"USER_REPORT", "CONTAMINATION"}
 
 
-def create_moderation_incident(db, actor: User, composter_id: str, kind: str | None, comment: str | None, review_id: str) -> Incident | None:
+def create_moderation_incident(db, actor: User, composter_id: str, kind: str | None, comment: str | None, review_id: str, photo_key: str | None = None) -> Incident | None:
     normalized_kind = (kind or "").strip().upper()
     if not normalized_kind:
         return None
@@ -41,6 +41,7 @@ def create_moderation_incident(db, actor: User, composter_id: str, kind: str | N
         severity="MEDIUM",
         title=incident_title(normalized_kind),
         description=(comment or "").strip(),
+        photo_key=photo_key,
         created_by=actor.id,
     )
     db.add(incident)

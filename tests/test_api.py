@@ -7,7 +7,7 @@ from app import web
 from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User
+from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
 from tests.conftest import token
 
 
@@ -135,7 +135,7 @@ def test_third_violation_blocks_user(client):
         assert response.status_code == 200
     with SessionLocal() as db:
         assert db.get(User, "user-1").is_blocked is True
-        assert db.get(Review, "review-0").comment == "Обнаружено нарушение"
+        assert db.get(Review, "review-0").comment == "Обнаружено загрязнение"
     history = client.get("/admin/users/user-1/history", headers=moderator).json()
     photo_events = [row for row in history if row["photo_url"]]
     assert len(photo_events) == 3
@@ -166,7 +166,7 @@ def test_moderation_history_returns_annotations_and_reviewer(client):
         db.add(Review(id="review-history", session_id=session.id, photo_key="photo-history"))
         db.commit()
     boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "plastic"}]
-    result = client.post("/moderation/reviews/review-history", json={"approved": False, "incident_kind": "LOCK", "comment": "Замок не закрывается", "annotations": boxes}, headers=moderator)
+    result = client.post("/moderation/reviews/review-history", json={"approved": True, "create_incident": True, "incident_kind": "LOCK", "comment": "Замок не закрывается", "annotations": boxes}, headers=moderator)
     assert result.status_code == 200
     history = client.get("/moderation/history", headers=moderator)
     assert history.status_code == 200
@@ -177,9 +177,37 @@ def test_moderation_history_returns_annotations_and_reviewer(client):
         incident = db.scalars(select(Incident).where(Incident.composter_id == "composter-1", Incident.kind == "LOCK")).one()
         assert incident.description == "Замок не закрывается"
         assert incident.created_by == "mod-1"
+        assert incident.photo_key == "photo-history"
         review = db.get(Review, "review-history")
-        assert review.violation_reason == "LOCK"
+        assert review.status == ReviewStatus.APPROVED
+        assert review.violation_reason is None
         assert review.comment == incident.description
+
+
+def test_only_contamination_deducts_points(client):
+    moderator = auth(token(client, "moderator@example.com"))
+    with SessionLocal() as db:
+        db.add(UserScore(user_id="user-1", points=30, total_uploads=0, valid_uploads=0))
+        for suffix in ("contamination", "incident"):
+            session = AccessSession(id=f"session-{suffix}", user_id="user-1", composter_id="composter-1")
+            db.add(session)
+            db.flush()
+            db.add(Review(id=f"review-{suffix}", session_id=session.id, photo_key=f"photo-{suffix}"))
+        db.commit()
+    contamination = client.post("/moderation/reviews/review-contamination", json={"approved": False, "violation_reason": "CONTAMINATION"}, headers=moderator)
+    assert contamination.status_code == 200
+    with SessionLocal() as db:
+        assert db.get(UserScore, "user-1").points == 15
+        review = db.get(Review, "review-contamination")
+        assert review.status == ReviewStatus.REJECTED
+        assert review.violation_reason == "CONTAMINATION"
+    other_incident = client.post("/moderation/reviews/review-incident", json={"approved": True, "create_incident": True, "incident_kind": "OVERFLOW", "comment": "Переполнен"}, headers=moderator)
+    assert other_incident.status_code == 200
+    with SessionLocal() as db:
+        assert db.get(UserScore, "user-1").points == 25
+        assert db.get(Review, "review-incident").status == ReviewStatus.APPROVED
+        incident = db.scalars(select(Incident).where(Incident.kind == "OVERFLOW")).one()
+        assert incident.photo_key == "photo-incident"
 
 
 def test_user_cannot_open_moderation_queue(client):
@@ -331,16 +359,19 @@ def test_staff_web_login_and_role_sections(client):
     assert "/full-state" not in moderation.text
     assert 'name="incident_kind"' in moderation.text
     assert 'name="incident_comment"' not in moderation.text
-    assert "Зафиксировать инцидент" in moderation.text
+    assert "Обнаружено загрязнение" in moderation.text
+    assert "Обнаружен другой инцидент" in moderation.text
     moderation_result = client.post(
         "/web/reviews/web-review",
-        data={"approved": "false", "comment": "Контейнер переполнен", "incident_kind": "OVERFLOW", "annotations": "[]", "csrf_token": client.cookies.get("compost_csrf")},
+        data={"action": "INCIDENT", "comment": "Контейнер переполнен", "incident_kind": "OVERFLOW", "annotations": "[]", "csrf_token": client.cookies.get("compost_csrf")},
         follow_redirects=False,
     )
     assert moderation_result.status_code == 303
     with SessionLocal() as db:
         incident = db.scalars(select(Incident).where(Incident.composter_id == "composter-1", Incident.kind == "OVERFLOW")).one()
         assert incident.description == "Контейнер переполнен"
+        assert incident.photo_key == "web-review-photo"
+        assert db.get(Review, "web-review").status == ReviewStatus.APPROVED
     map_page = client.get("/web/map")
     assert map_page.status_code == 200
     assert "composter-map" in map_page.text

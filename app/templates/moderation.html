@@ -26,19 +26,22 @@
         <form method="post" action="/web/reviews/{{ row.review.id }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="annotations" value="{{ row.annotations|e }}">
-          <label>Тип инцидента
-            <select name="incident_kind" required>
-              <option value="" disabled selected>Выберите тип</option>
-              <option value="CONTAMINATION">Загрязнение</option>
-              <option value="OVERFLOW">Переполнение</option>
-              <option value="LOCK">Проблема с замком</option>
-              <option value="DEVICE">Неисправность устройства</option>
-              <option value="MAINTENANCE">Требуется обслуживание</option>
-              <option value="OTHER">Другое</option>
-            </select>
-          </label>
-          <label>Комментарий<input name="comment" placeholder="Необязательно"></label>
-          <div class="review-actions"><button name="approved" value="true" formnovalidate>Нарушений нет</button><button class="danger" name="approved" value="false">Зафиксировать инцидент</button></div>
+          <div class="review-actions"><button name="action" value="APPROVE" formnovalidate>Нарушений нет</button><button class="danger" name="action" value="CONTAMINATION" formnovalidate>Обнаружено загрязнение</button></div>
+          <button type="button" class="incident-toggle" data-action="toggle-incident">Обнаружен другой инцидент</button>
+          <div class="incident-create" hidden>
+            <label>Тип инцидента
+              <select name="incident_kind" required>
+                <option value="" disabled selected>Выберите тип</option>
+                <option value="OVERFLOW">Переполнение</option>
+                <option value="LOCK">Проблема с замком</option>
+                <option value="DEVICE">Неисправность устройства</option>
+                <option value="MAINTENANCE">Требуется обслуживание</option>
+                <option value="OTHER">Другое</option>
+              </select>
+            </label>
+            <label>Комментарий<input name="comment" placeholder="Необязательно"></label>
+            <button name="action" value="INCIDENT">Создать инцидент и принять загрузку</button>
+          </div>
         </form>
       </div>
     </div>
@@ -218,6 +221,13 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
   stage.querySelector('[data-action="undo"]').onclick = () => { boxes.pop(); selected=-1; render(); };
   stage.querySelector('[data-action="clear"]').onclick = () => { boxes=[]; selected=-1; hovered=-1; render(); };
   image.addEventListener('load', resize); new ResizeObserver(resize).observe(stage);
+});
+document.querySelectorAll('[data-action="toggle-incident"]').forEach(button => {
+  button.onclick = () => {
+    const panel = button.closest('form').querySelector('.incident-create');
+    panel.hidden = !panel.hidden;
+    button.textContent = panel.hidden ? 'Обнаружен другой инцидент' : 'Скрыть создание инцидента';
+  };
 });
 </script>
 {% endblock %}

@@ -9,7 +9,7 @@ from ..database import get_db
 from ..models import AccessSession, Review, ReviewStatus, Role, User, Violation
 from ..schemas import ModerateRequest
 from ..security import require_roles
-from ..services import apply_violation, audit, photo_url, reward_review
+from ..services import apply_violation, audit, create_moderation_incident, photo_url, reward_review
 
 router = APIRouter(prefix="/moderation")
 
@@ -70,6 +70,10 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
     review.reviewed_at = datetime.now(timezone.utc)
     session = db.get(AccessSession, review.session_id)
     user = db.get(User, session.user_id)
+    try:
+        create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.incident_comment, review.id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     was_blocked = user.is_blocked
     if not data.approved:
         review.violation_reason = data.violation_reason or "INVALID_COMPOST"

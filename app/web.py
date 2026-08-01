@@ -19,7 +19,7 @@ from .config import get_settings
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
-from .services import apply_violation, audit, incident_title, photo_url, reward_review, store_photo
+from .services import apply_violation, audit, create_moderation_incident, incident_title, photo_url, reward_review, store_photo
 from .web_support.security import csrf, generate_csrf, require_role
 from .web_support.storage import firmware_rows, firmware_s3, human_size, normalized_annotations, storage_file_label
 from .web_support.context import page_context
@@ -1023,7 +1023,7 @@ async def flasher_audit(request: Request, db: Session = Depends(get_db), actor: 
 
 
 @router.post("/reviews/{review_id}")
-def moderate_review(request: Request, review_id: str, approved: bool = Form(), comment: str = Form(""), violation_reason: str = Form("INVALID_COMPOST"), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def moderate_review(request: Request, review_id: str, approved: bool = Form(), comment: str = Form(""), violation_reason: str = Form("INVALID_COMPOST"), incident_kind: str = Form(""), incident_comment: str = Form(""), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     require_role(actor, Role.ADMIN, Role.MODERATOR)
     review = db.get(Review, review_id)
@@ -1036,6 +1036,10 @@ def moderate_review(request: Request, review_id: str, approved: bool = Form(), c
         review.reviewed_at = datetime.now(timezone.utc)
         session = db.get(AccessSession, review.session_id)
         user = db.get(User, session.user_id)
+        try:
+            create_moderation_incident(db, actor, session.composter_id, incident_kind, incident_comment, review.id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         was_blocked = user.is_blocked
         if not approved:
             review.violation_reason = violation_reason

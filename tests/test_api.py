@@ -1,6 +1,7 @@
 import io
 import json
 import jwt
+from sqlalchemy import select
 
 from app import web
 from app.api import storage as storage_api
@@ -165,13 +166,17 @@ def test_moderation_history_returns_annotations_and_reviewer(client):
         db.add(Review(id="review-history", session_id=session.id, photo_key="photo-history"))
         db.commit()
     boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "plastic"}]
-    result = client.post("/moderation/reviews/review-history", json={"approved": False, "violation_reason": "PLASTIC", "annotations": boxes}, headers=moderator)
+    result = client.post("/moderation/reviews/review-history", json={"approved": False, "violation_reason": "PLASTIC", "incident_kind": "LOCK", "incident_comment": "Замок не закрывается", "annotations": boxes}, headers=moderator)
     assert result.status_code == 200
     history = client.get("/moderation/history", headers=moderator)
     assert history.status_code == 200
     row = next(item for item in history.json() if item["id"] == "review-history")
     assert row["annotations"] == boxes
     assert row["reviewer_name"] == "moderator@example.com"
+    with SessionLocal() as db:
+        incident = db.scalars(select(Incident).where(Incident.composter_id == "composter-1", Incident.kind == "LOCK")).one()
+        assert incident.description == "Замок не закрывается"
+        assert incident.created_by == "mod-1"
 
 
 def test_user_cannot_open_moderation_queue(client):
@@ -320,7 +325,18 @@ def test_staff_web_login_and_role_sections(client):
     moderation = client.get("/web/moderation")
     assert moderation.status_code == 200
     assert "NEEDS_MANUAL_REVIEW" not in moderation.text
-    assert "/full-state" in moderation.text
+    assert "/full-state" not in moderation.text
+    assert 'name="incident_kind"' in moderation.text
+    assert 'name="incident_comment"' in moderation.text
+    moderation_result = client.post(
+        "/web/reviews/web-review",
+        data={"approved": "true", "comment": "", "violation_reason": "INVALID_COMPOST", "incident_kind": "OVERFLOW", "incident_comment": "Контейнер переполнен", "annotations": "[]", "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert moderation_result.status_code == 303
+    with SessionLocal() as db:
+        incident = db.scalars(select(Incident).where(Incident.composter_id == "composter-1", Incident.kind == "OVERFLOW")).one()
+        assert incident.description == "Контейнер переполнен"
     map_page = client.get("/web/map")
     assert map_page.status_code == 200
     assert "composter-map" in map_page.text

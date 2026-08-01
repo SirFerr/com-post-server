@@ -48,6 +48,8 @@ class ModerateRequest(BaseModel):
     approved: bool
     violation_reason: str | None = None
     comment: str | None = None
+    incident_kind: str | None = Field(default=None, max_length=80)
+    incident_comment: str | None = Field(default=None, max_length=5000)
     annotations: list[dict[str, float | str]] = Field(default_factory=list, max_length=100)
 
     @field_validator("annotations")

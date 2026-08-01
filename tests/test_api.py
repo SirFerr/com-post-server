@@ -265,7 +265,8 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "/static/admin.css?v=23" in page.text
+    assert "/static/admin.css?v=24" in page.text
+    assert ".history [hidden]{display:none!important}" in client.get("/static/admin.css").text
     assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
     assert "Последние действия" not in page.text

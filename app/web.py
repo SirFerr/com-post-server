@@ -1023,7 +1023,7 @@ async def flasher_audit(request: Request, db: Session = Depends(get_db), actor: 
 
 
 @router.post("/reviews/{review_id}")
-def moderate_review(request: Request, review_id: str, approved: bool = Form(), comment: str = Form(""), violation_reason: str = Form("INVALID_COMPOST"), incident_kind: str = Form(""), incident_comment: str = Form(""), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def moderate_review(request: Request, review_id: str, approved: bool = Form(), comment: str = Form(""), incident_kind: str = Form(""), annotations: str = Form("[]"), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
     require_role(actor, Role.ADMIN, Role.MODERATOR)
     review = db.get(Review, review_id)
@@ -1036,14 +1036,17 @@ def moderate_review(request: Request, review_id: str, approved: bool = Form(), c
         review.reviewed_at = datetime.now(timezone.utc)
         session = db.get(AccessSession, review.session_id)
         user = db.get(User, session.user_id)
-        try:
-            create_moderation_incident(db, actor, session.composter_id, incident_kind, incident_comment, review.id)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+        if not approved:
+            try:
+                incident = create_moderation_incident(db, actor, session.composter_id, incident_kind, comment, review.id)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if incident is None:
+                raise HTTPException(422, "Incident type is required")
         was_blocked = user.is_blocked
         if not approved:
-            review.violation_reason = violation_reason
-            apply_violation(db, review, session, violation_reason)
+            review.violation_reason = incident_kind.strip().upper()
+            apply_violation(db, review, session, review.violation_reason)
             if not was_blocked and user.is_blocked:
                 audit(db, actor, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})
         reward_review(db, session, approved)

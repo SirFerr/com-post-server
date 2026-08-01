@@ -70,13 +70,14 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
     review.reviewed_at = datetime.now(timezone.utc)
     session = db.get(AccessSession, review.session_id)
     user = db.get(User, session.user_id)
-    try:
-        create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.incident_comment, review.id)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    if not data.approved:
+        try:
+            create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.comment, review.id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     was_blocked = user.is_blocked
     if not data.approved:
-        review.violation_reason = data.violation_reason or "INVALID_COMPOST"
+        review.violation_reason = (data.incident_kind or data.violation_reason or "INVALID_COMPOST").strip().upper()
         apply_violation(db, review, session, review.violation_reason)
         if not was_blocked and user.is_blocked:
             audit(db, moderator, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})

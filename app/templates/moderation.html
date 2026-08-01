@@ -26,12 +26,9 @@
         <form method="post" action="/web/reviews/{{ row.review.id }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="annotations" value="{{ row.annotations|e }}">
-          <label>Комментарий<input name="comment" placeholder="Обнаружено нарушение"></label>
-          <label>Категория нарушения<input name="violation_reason" value="INVALID_COMPOST"></label>
-          <label>Инцидент
+          <label>Тип инцидента
             <select name="incident_kind" required>
-              <option value="" disabled selected>Выберите вариант</option>
-              <option value="">Без инцидента</option>
+              <option value="" disabled selected>Выберите тип</option>
               <option value="CONTAMINATION">Загрязнение</option>
               <option value="OVERFLOW">Переполнение</option>
               <option value="LOCK">Проблема с замком</option>
@@ -40,8 +37,8 @@
               <option value="OTHER">Другое</option>
             </select>
           </label>
-          <label>Комментарий к инциденту<input name="incident_comment" placeholder="Необязательно"></label>
-          <div class="review-actions"><button name="approved" value="true">Принять</button><button class="danger" name="approved" value="false">Отклонить</button></div>
+          <label>Комментарий<input name="comment" placeholder="Необязательно"></label>
+          <div class="review-actions"><button name="approved" value="true" formnovalidate>Нарушений нет</button><button class="danger" name="approved" value="false">Зафиксировать инцидент</button></div>
         </form>
       </div>
     </div>
@@ -68,11 +65,19 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
   const field = stage.closest('dialog').querySelector('input[name="annotations"]');
   const controls = document.createElement('div');
   controls.className = 'box-controls';
-  controls.innerHTML = '<button type="button" data-box-action="delete" title="Удалить область" aria-label="Удалить">×</button>';
+  controls.innerHTML = '<button type="button" data-box-action="move" title="Переместить область" aria-label="Переместить">↕</button><button type="button" data-box-action="delete" title="Удалить область" aria-label="Удалить">×</button>';
   stage.appendChild(controls);
   let boxes = JSON.parse(stage.dataset.boxes || '[]'), selected = -1, hovered = -1, drag = null;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const resize = () => { canvas.width = image.clientWidth; canvas.height = image.clientHeight; render(); };
+  const resize = () => {
+    canvas.width = image.clientWidth;
+    canvas.height = image.clientHeight;
+    canvas.style.left = `${image.offsetLeft}px`;
+    canvas.style.top = `${image.offsetTop}px`;
+    canvas.style.width = `${image.clientWidth}px`;
+    canvas.style.height = `${image.clientHeight}px`;
+    render();
+  };
   const hitBox = p => {
     for (let i = boxes.length - 1; i >= 0; i--) {
       const b = boxes[i];
@@ -105,8 +110,8 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
     if (index < 0 || !boxes[index]) { controls.hidden = true; return; }
     const b = boxes[index];
     controls.hidden = false;
-    controls.style.left = `${clamp((b.x + b.width / 2) * canvas.clientWidth, 42, canvas.clientWidth - 42)}px`;
-    controls.style.top = `${Math.max(8, b.y * canvas.clientHeight - 42)}px`;
+    controls.style.left = `${image.offsetLeft + clamp((b.x + b.width / 2) * canvas.clientWidth, 42, canvas.clientWidth - 42)}px`;
+    controls.style.top = `${image.offsetTop + Math.max(8, b.y * canvas.clientHeight - 42)}px`;
   };
   const render = (draft = null) => {
     const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -181,6 +186,30 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
     drag=null; canvas.style.cursor='crosshair'; render();
   });
   controls.addEventListener('pointerdown', e => e.stopPropagation());
+  const moveButton = controls.querySelector('[data-box-action="move"]');
+  moveButton.addEventListener('pointerdown', e => {
+    const index = selected >= 0 ? selected : hovered;
+    if (index < 0 || !boxes[index]) return;
+    e.preventDefault();
+    selected = index;
+    hovered = index;
+    drag = {type:'move-control', index, start:point(e), original:{...boxes[index]}};
+    moveButton.classList.add('active');
+    moveButton.setPointerCapture(e.pointerId);
+    render();
+  });
+  moveButton.addEventListener('pointermove', e => {
+    if (!drag || drag.type !== 'move-control') return;
+    const p = point(e), b = drag.original;
+    boxes[drag.index] = {...b, x:clamp(b.x+p.x-drag.start.x,0,1-b.width), y:clamp(b.y+p.y-drag.start.y,0,1-b.height)};
+    render();
+  });
+  const finishControlMove = () => {
+    if (drag?.type === 'move-control') drag = null;
+    moveButton.classList.remove('active');
+  };
+  moveButton.addEventListener('pointerup', finishControlMove);
+  moveButton.addEventListener('pointercancel', finishControlMove);
   controls.querySelector('[data-box-action="delete"]').onclick = () => {
     const index = selected >= 0 ? selected : hovered;
     if (index >= 0) boxes.splice(index, 1);
@@ -188,7 +217,7 @@ document.querySelectorAll('.annotation-stage').forEach(stage => {
   };
   stage.querySelector('[data-action="undo"]').onclick = () => { boxes.pop(); selected=-1; render(); };
   stage.querySelector('[data-action="clear"]').onclick = () => { boxes=[]; selected=-1; hovered=-1; render(); };
-  image.addEventListener('load', resize); new ResizeObserver(resize).observe(image);
+  image.addEventListener('load', resize); new ResizeObserver(resize).observe(stage);
 });
 </script>
 {% endblock %}

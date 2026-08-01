@@ -166,7 +166,7 @@ def test_moderation_history_returns_annotations_and_reviewer(client):
         db.add(Review(id="review-history", session_id=session.id, photo_key="photo-history"))
         db.commit()
     boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "plastic"}]
-    result = client.post("/moderation/reviews/review-history", json={"approved": False, "violation_reason": "PLASTIC", "incident_kind": "LOCK", "incident_comment": "Замок не закрывается", "annotations": boxes}, headers=moderator)
+    result = client.post("/moderation/reviews/review-history", json={"approved": False, "incident_kind": "LOCK", "comment": "Замок не закрывается", "annotations": boxes}, headers=moderator)
     assert result.status_code == 200
     history = client.get("/moderation/history", headers=moderator)
     assert history.status_code == 200
@@ -177,6 +177,9 @@ def test_moderation_history_returns_annotations_and_reviewer(client):
         incident = db.scalars(select(Incident).where(Incident.composter_id == "composter-1", Incident.kind == "LOCK")).one()
         assert incident.description == "Замок не закрывается"
         assert incident.created_by == "mod-1"
+        review = db.get(Review, "review-history")
+        assert review.violation_reason == "LOCK"
+        assert review.comment == incident.description
 
 
 def test_user_cannot_open_moderation_queue(client):
@@ -327,10 +330,11 @@ def test_staff_web_login_and_role_sections(client):
     assert "NEEDS_MANUAL_REVIEW" not in moderation.text
     assert "/full-state" not in moderation.text
     assert 'name="incident_kind"' in moderation.text
-    assert 'name="incident_comment"' in moderation.text
+    assert 'name="incident_comment"' not in moderation.text
+    assert "Зафиксировать инцидент" in moderation.text
     moderation_result = client.post(
         "/web/reviews/web-review",
-        data={"approved": "true", "comment": "", "violation_reason": "INVALID_COMPOST", "incident_kind": "OVERFLOW", "incident_comment": "Контейнер переполнен", "annotations": "[]", "csrf_token": client.cookies.get("compost_csrf")},
+        data={"approved": "false", "comment": "Контейнер переполнен", "incident_kind": "OVERFLOW", "annotations": "[]", "csrf_token": client.cookies.get("compost_csrf")},
         follow_redirects=False,
     )
     assert moderation_result.status_code == 303

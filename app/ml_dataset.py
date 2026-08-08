@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import AccessSession, DatasetVersion, Review, ReviewStatus
+from .models import AccessSession, DatasetVersion, MLDatasetSample, Review, ReviewStatus
 
 
-DATASET_SCHEMA_VERSION = 2
+DATASET_SCHEMA_VERSION = 3
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -51,10 +51,15 @@ def build_dataset_manifest(db: Session) -> dict:
         .where(Review.status != ReviewStatus.PENDING)
         .order_by(Review.created_at, Review.id)
     ).all()
-    assignments = split_by_composter([session.composter_id for _, session in rows]) if rows else {}
+    manual_rows = list(db.scalars(select(MLDatasetSample).order_by(MLDatasetSample.created_at, MLDatasetSample.id)).all())
+    review_groups = [f"composter:{session.composter_id}" for _, session in rows]
+    manual_groups = [f"manual:{sample.source_group}" for sample in manual_rows]
+    all_groups = review_groups + manual_groups
+    assignments = split_by_composter(all_groups) if all_groups else {}
     samples = []
     for review, session in rows:
         boxes = json.loads(review.annotations or "[]")
+        group = f"composter:{session.composter_id}"
         samples.append({
             "review_id": review.id,
             "photo_key": review.photo_key,
@@ -62,11 +67,30 @@ def build_dataset_manifest(db: Session) -> dict:
             "moderation_status": review.status.value,
             "violation": review.violation_reason,
             "boxes": boxes,
-            "split": assignments[session.composter_id],
+            "split": assignments[group],
+            "source": "moderation",
+            "source_group": group,
             "composter_id": session.composter_id,
             "user_id": session.user_id,
             "captured_at": _iso(review.created_at),
             "reviewed_at": _iso(review.reviewed_at),
+        })
+    for sample in manual_rows:
+        group = f"manual:{sample.source_group}"
+        samples.append({
+            "review_id": f"manual:{sample.id}",
+            "photo_key": sample.photo_key,
+            "label": sample.label.lower(),
+            "moderation_status": None,
+            "violation": "CONTAMINATION" if sample.label == "CONTAMINATION" else None,
+            "boxes": json.loads(sample.annotations or "[]"),
+            "split": assignments[group],
+            "source": "manual",
+            "source_group": group,
+            "composter_id": None,
+            "user_id": None,
+            "captured_at": _iso(sample.created_at),
+            "reviewed_at": _iso(sample.created_at),
         })
 
     labels = Counter(sample["label"] for sample in samples)
@@ -79,12 +103,13 @@ def build_dataset_manifest(db: Session) -> dict:
         "schema_version": DATASET_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "classes": ["contamination"],
-        "split_strategy": "grouped-by-composter-sha256-v1",
+        "split_strategy": "grouped-by-source-sha256-v2",
         "summary": {
             "samples": len(samples),
             "annotated": annotated,
             "annotated_contamination": annotated_contamination,
             "composters": len(assignments),
+            "manual_samples": len(manual_rows),
             "labels": dict(labels),
             "splits": dict(splits),
         },
@@ -95,14 +120,16 @@ def build_dataset_manifest(db: Session) -> dict:
 def training_readiness(manifest: dict) -> dict:
     summary = manifest["summary"]
     checks = {
-        "samples": {"actual": summary["samples"], "recommended": 200},
+        "samples": {"actual": summary["samples"], "minimum": 6, "recommended": 200},
         "contamination_boxes": {
             "actual": summary["annotated_contamination"],
+            "minimum": 2,
             "recommended": 50,
         },
-        "composters": {"actual": summary["composters"], "recommended": 3},
+        "composters": {"actual": summary["composters"], "minimum": 2, "recommended": 3},
     }
     return {
+        "trainable": all(item["actual"] >= item["minimum"] for item in checks.values()),
         "ready": all(item["actual"] >= item["recommended"] for item in checks.values()),
         "checks": checks,
     }

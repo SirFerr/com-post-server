@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .config import get_settings
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
-from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
+from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetSample, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
 from .services import apply_violation, audit, create_moderation_incident, incident_title, photo_url, reward_review, store_photo
 from .web_support.security import csrf, generate_csrf, require_role
@@ -627,6 +627,7 @@ def ml_page(request: Request, db: Session = Depends(get_db), actor: User = Depen
             annotated=summary["annotated"],
             approved=summary["labels"].get("clean", 0),
             contaminated=summary["labels"].get("contamination", 0),
+            manual_samples=summary.get("manual_samples", 0),
             dataset=json.dumps(dataset, ensure_ascii=False),
             readiness=training_readiness(dataset),
             versions=versions,
@@ -636,6 +637,41 @@ def ml_page(request: Request, db: Session = Depends(get_db), actor: User = Depen
             service_status=service_status,
         ),
     )
+
+
+@router.post("/ml/samples")
+def upload_ml_sample_page(
+    request: Request,
+    file: UploadFile = File(),
+    label: str = Form(),
+    annotations: str = Form("[]"),
+    source_group: str = Form("manual"),
+    csrf_token: str = Form(),
+    db: Session = Depends(get_db),
+    actor: User = Depends(web_current_user),
+):
+    csrf(request, csrf_token)
+    require_role(actor, Role.ADMIN)
+    normalized_label = label.strip().upper()
+    if normalized_label not in {"CLEAN", "CONTAMINATION"}:
+        raise HTTPException(422, "Неизвестный класс ML-примера")
+    boxes = normalized_annotations(annotations) if normalized_label == "CONTAMINATION" else []
+    if normalized_label == "CONTAMINATION" and not boxes:
+        raise HTTPException(422, "Для загрязнения отметьте хотя бы одну область")
+    group = source_group.strip()[:120] or "manual"
+    photo_key = store_photo(file)
+    sample = MLDatasetSample(
+        photo_key=photo_key,
+        label=normalized_label,
+        annotations=json.dumps(boxes, ensure_ascii=False),
+        source_group=group,
+        created_by=actor.id,
+    )
+    db.add(sample)
+    db.flush()
+    audit(db, actor, "ml_sample", sample.id, "ML_SAMPLE_UPLOADED", {"label": normalized_label, "boxes": len(boxes), "source_group": group})
+    db.commit()
+    return RedirectResponse("/web/ml", 303)
 
 
 @router.post("/ml/datasets")
@@ -689,8 +725,8 @@ def queue_training_page(
     if active:
         raise HTTPException(409, "Обучение уже поставлено в очередь")
     readiness = training_readiness(json.loads(dataset.manifest))
-    if not readiness["ready"]:
-        raise HTTPException(422, "Недостаточно разнообразных данных для безопасного запуска обучения")
+    if not readiness["trainable"]:
+        raise HTTPException(422, "Недостаточно данных даже для экспериментального обучения")
     run = ModelTrainingRun(dataset_version=dataset.version, requested_by=actor.id)
     db.add(run)
     db.flush()

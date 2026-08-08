@@ -54,11 +54,13 @@ services:
       DATABASE_URL: postgresql+psycopg://compost:compost-local@postgres:5432/compost
       JWT_SECRET: local-compose-secret-change-in-production
       S3_PUBLIC_ENDPOINT: http://192.168.1.212:9000
+      ML_SERVICE_URL: http://ml-service:8001
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
       firmware-storage-init: {condition: service_completed_successfully}
+      ml-service: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -69,13 +71,14 @@ services:
       context: .
       dockerfile: Dockerfile.ml
     command: ["uvicorn", "ml_service:app", "--host", "0.0.0.0", "--port", "8001"]
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 10s
       timeout: 3s
       retries: 10
   ml-trainer:
-    profiles: ["training"]
     build:
       context: .
       dockerfile: Dockerfile.ml-train
@@ -89,6 +92,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
+    restart: unless-stopped
     volumes: [ml-cache:/root/.cache]
 volumes:
   postgres-data:

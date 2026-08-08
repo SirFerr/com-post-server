@@ -189,6 +189,17 @@ class MaintenanceRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class MLDatasetSample(Base):
+    __tablename__ = "ml_dataset_samples"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    photo_key: Mapped[str] = mapped_column(String(512), unique=True)
+    label: Mapped[str] = mapped_column(String(32), index=True)
+    annotations: Mapped[str] = mapped_column(Text, default="[]")
+    source_group: Mapped[str] = mapped_column(String(120), default="manual")
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class DatasetVersion(Base):
     __tablename__ = "dataset_versions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

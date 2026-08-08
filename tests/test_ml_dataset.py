@@ -16,5 +16,10 @@ def test_training_readiness_requires_volume_boxes_and_sites():
         }
     }
     assert training_readiness(manifest)["ready"] is True
+    assert training_readiness(manifest)["trainable"] is True
     manifest["summary"]["composters"] = 2
     assert training_readiness(manifest)["ready"] is False
+    manifest["summary"].update(samples=6, annotated_contamination=2)
+    assert training_readiness(manifest)["trainable"] is True
+    manifest["summary"]["annotated_contamination"] = 1
+    assert training_readiness(manifest)["trainable"] is False

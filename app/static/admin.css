@@ -33,6 +33,7 @@
 .ml-stats{grid-template-columns:repeat(4,minmax(150px,1fr))}
 .ml-stats>*{min-height:118px}
 .ml-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr);gap:18px;margin-bottom:18px}
+.ml-upload-panel{display:grid;gap:16px;margin-bottom:18px}.ml-upload-panel h2{margin:4px 0}.ml-upload-panel form{display:grid;gap:14px}.ml-upload-fields{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:12px}.ml-upload-fields input,.ml-upload-fields select{width:100%;max-width:none}.ml-annotator{position:relative;justify-self:start;max-width:100%;max-height:520px;background:#050705}.ml-annotator img{display:block;max-width:100%;max-height:520px}.ml-annotator canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;touch-action:none}.ml-annotation-actions{display:flex;gap:10px}.ml-annotation-actions button{width:auto}
 .ml-steps{display:grid;gap:0;margin:0 0 22px;padding:0;list-style:none;counter-reset:ml-step}
 .ml-steps li{display:grid;grid-template-columns:34px 120px 1fr;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);counter-increment:ml-step}
 .ml-steps li:before{content:counter(ml-step);display:grid;width:28px;height:28px;place-items:center;border-radius:9px;background:var(--accent-dark);color:var(--accent);font-weight:900}
@@ -47,7 +48,7 @@
 .dataset-list{display:grid;gap:8px}
 .dataset-list article{display:grid;grid-template-columns:minmax(210px,1fr) 130px 160px 70px;align-items:center;gap:16px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:#101411}
 .dataset-list article div{display:grid}.dataset-list article a{color:var(--accent);font-weight:800;text-decoration:none}
-@media(max-width:950px){.ml-stats{grid-template-columns:repeat(2,1fr)}.ml-grid{grid-template-columns:1fr}}
+@media(max-width:950px){.ml-stats{grid-template-columns:repeat(2,1fr)}.ml-grid{grid-template-columns:1fr}.ml-upload-fields{grid-template-columns:1fr}}
 @media(max-width:650px){.ml-steps li{grid-template-columns:34px 1fr}.ml-steps li span{grid-column:2}.ml-actions{align-items:stretch;flex-direction:column}.ml-actions button,.ml-actions form{width:100%}.dataset-list article{grid-template-columns:1fr 1fr}.dataset-list article div{grid-column:1/-1}}
 :root{--text:#dce9df;--muted:#9fb3a6}
 button:disabled{cursor:not-allowed;filter:saturate(.2);opacity:.55}

@@ -47,7 +47,8 @@ def export_yolo(manifest_path: Path, output: Path) -> dict:
         split = sample.get("split", "train")
         if split not in ("train", "val", "test"):
             raise ValueError(f"Unsupported split {split!r}")
-        stem = f"{index:06d}-{sample.get('review_id', 'sample')}"
+        sample_id = "".join(character if character.isalnum() or character in "-_" else "-" for character in str(sample.get("review_id", "sample")))
+        stem = f"{index:06d}-{sample_id}"
         image_path = output / "images" / split / f"{stem}.jpg"
         label_path = output / "labels" / split / f"{stem}.txt"
         client.download_file(bucket, sample["photo_key"], str(image_path.with_suffix(".source")))

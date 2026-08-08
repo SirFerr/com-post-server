@@ -7,12 +7,39 @@ from app import web
 from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AccessSession, AuditLog, DeviceCommand, Incident, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
+from app.ml_dataset import build_dataset_manifest
+from app.models import AccessSession, AuditLog, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
 from tests.conftest import token
 
 
 def auth(value):
     return {"Authorization": f"Bearer {value}"}
+
+
+def test_web_ml_manual_upload_adds_trainable_sample(client, monkeypatch):
+    monkeypatch.setattr(web, "store_photo", lambda file: f"ml/manual/{file.filename}")
+    login = client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False)
+    assert login.status_code == 303
+    page = client.get("/web/ml")
+    assert page.status_code == 200
+    assert 'action="/web/ml/samples"' in page.text
+    assert 'id="ml-annotator"' in page.text
+    boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "contamination"}]
+    upload = client.post(
+        "/web/ml/samples",
+        data={"label": "CONTAMINATION", "annotations": json.dumps(boxes), "source_group": "yard-a", "csrf_token": client.cookies.get("compost_csrf")},
+        files={"file": ("sample.jpg", b"sample-image", "image/jpeg")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+    with SessionLocal() as db:
+        sample = db.scalars(select(MLDatasetSample)).one()
+        assert sample.label == "CONTAMINATION"
+        assert sample.source_group == "yard-a"
+        manifest = build_dataset_manifest(db)
+        assert manifest["schema_version"] == 3
+        assert manifest["samples"][0]["source"] == "manual"
+        assert manifest["samples"][0]["boxes"] == boxes
 
 
 def test_audit_entity_id_accepts_storage_keys():
@@ -581,8 +608,8 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert dataset.json()["version"] == 1
     manifest = client.get("/admin/ml/datasets/1", headers=admin)
     assert manifest.status_code == 200
-    assert manifest.json()["schema_version"] == 2
-    assert manifest.json()["split_strategy"] == "grouped-by-composter-sha256-v1"
+    assert manifest.json()["schema_version"] == 3
+    assert manifest.json()["split_strategy"] == "grouped-by-source-sha256-v2"
     assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
     violation_detail = client.get(f"/web/violations/{manual.json()['id']}")
     assert violation_detail.status_code == 200

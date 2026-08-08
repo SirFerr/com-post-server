@@ -1,0 +1,9 @@
+{$DOMAIN} {
+    encode zstd gzip
+    reverse_proxy api:8000
+}
+
+{$S3_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy minio:9000
+}

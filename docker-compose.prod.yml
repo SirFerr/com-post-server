@@ -1,0 +1,159 @@
+name: compost
+
+x-common: &common
+  restart: unless-stopped
+  networks: [compost]
+
+services:
+  postgres:
+    <<: *common
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes: [postgres-data:/var/lib/postgresql/data]
+
+  minio:
+    <<: *common
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes: [minio-data:/data]
+
+  minio-init:
+    <<: *common
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c", "mc alias set local http://minio:9000 $${S3_ACCESS_KEY} $${S3_SECRET_KEY} && mc mb --ignore-existing local/compost-photos"]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+
+  firmware-storage:
+    <<: *common
+    image: minio/minio:latest
+    command: server /data --address :9100
+    environment:
+      MINIO_ROOT_USER: ${FIRMWARE_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${FIRMWARE_S3_SECRET_KEY}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes: [firmware-data:/data]
+
+  firmware-storage-init:
+    <<: *common
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      firmware-storage: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c", "mc alias set firmware http://firmware-storage:9100 $${FIRMWARE_S3_ACCESS_KEY} $${FIRMWARE_S3_SECRET_KEY} && mc mb --ignore-existing firmware/compost-firmware"]
+    environment:
+      FIRMWARE_S3_ACCESS_KEY: ${FIRMWARE_S3_ACCESS_KEY}
+      FIRMWARE_S3_SECRET_KEY: ${FIRMWARE_S3_SECRET_KEY}
+
+  ml-service:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    environment: &s3-environment
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: https://${S3_DOMAIN}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: compost-photos
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  ml-trainer:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile.ml-train
+    entrypoint: ["python", "-m", "tools.ml_worker"]
+    environment:
+      <<: *s3-environment
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ML_BASE_MODEL: ${ML_BASE_MODEL:-yolo26n.pt}
+      ML_EPOCHS: ${ML_EPOCHS:-60}
+      ML_IMAGE_SIZE: ${ML_IMAGE_SIZE:-640}
+      ML_CONFIDENCE: ${ML_CONFIDENCE:-0.35}
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    volumes: [ml-cache:/root/.cache]
+
+  api:
+    <<: *common
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: https://${S3_DOMAIN}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: compost-photos
+      FIRMWARE_S3_ENDPOINT: http://firmware-storage:9100
+      FIRMWARE_S3_ACCESS_KEY: ${FIRMWARE_S3_ACCESS_KEY}
+      FIRMWARE_S3_SECRET_KEY: ${FIRMWARE_S3_SECRET_KEY}
+      FIRMWARE_S3_BUCKET: compost-firmware
+      ML_SERVICE_URL: http://ml-service:8001
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+      firmware-storage-init: {condition: service_completed_successfully}
+      ml-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    <<: *common
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+      S3_DOMAIN: ${S3_DOMAIN}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api: {condition: service_healthy}
+
+networks:
+  compost:
+
+volumes:
+  postgres-data:
+  minio-data:
+  firmware-data:
+  ml-cache:
+  caddy-data:
+  caddy-config:

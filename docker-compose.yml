@@ -89,6 +89,10 @@ services:
       S3_BUCKET: compost-photos
       ML_BASE_MODEL: yolo26n.pt
       ML_EPOCHS: 60
+      ML_TACO_PRETRAIN: "true"
+      ML_TACO_ROOT: /root/.cache/compost/taco
+      ML_TACO_EPOCHS: 30
+      ML_TACO_DOWNLOAD_WORKERS: 8
     depends_on:
       postgres: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}

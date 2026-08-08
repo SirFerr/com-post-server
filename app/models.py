@@ -200,6 +200,20 @@ class MLDatasetSample(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class MLDatasetSampleArchive(Base):
+    __tablename__ = "ml_dataset_sample_archives"
+    sample_id: Mapped[str] = mapped_column(ForeignKey("ml_dataset_samples.id"), primary_key=True)
+    archived_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MLDatasetPhotoArchive(Base):
+    __tablename__ = "ml_dataset_photo_archives"
+    source_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    archived_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class DatasetVersion(Base):
     __tablename__ = "dataset_versions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

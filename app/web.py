@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .config import get_settings
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
-from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetSample, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
+from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetPhotoArchive, MLDatasetSample, MLDatasetSampleArchive, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
 from .services import apply_violation, audit, create_moderation_incident, incident_title, photo_url, reward_review, store_photo
 from .web_support.security import csrf, generate_csrf, require_role
@@ -605,6 +605,12 @@ def ml_page(request: Request, db: Session = Depends(get_db), actor: User = Depen
     dataset = build_dataset_manifest(db)
     summary = dataset["summary"]
     versions = list(db.scalars(select(DatasetVersion).order_by(DatasetVersion.version.desc())).all())
+    version_readiness = [
+        {"version": row, "readiness": training_readiness(json.loads(row.manifest))}
+        for row in versions
+    ]
+    trainable_versions = [item for item in version_readiness if item["readiness"]["trainable"]]
+    latest_version_readiness = version_readiness[0]["readiness"] if version_readiness else None
     runs = list(db.scalars(select(ModelTrainingRun).order_by(ModelTrainingRun.created_at.desc()).limit(20)).all())
     deployed = db.scalar(
         select(ModelTrainingRun)
@@ -627,14 +633,85 @@ def ml_page(request: Request, db: Session = Depends(get_db), actor: User = Depen
             annotated=summary["annotated"],
             approved=summary["labels"].get("clean", 0),
             contaminated=summary["labels"].get("contamination", 0),
-            manual_samples=summary.get("manual_samples", 0),
-            dataset=json.dumps(dataset, ensure_ascii=False),
-            readiness=training_readiness(dataset),
             versions=versions,
             latest_version=versions[0] if versions else None,
+            latest_version_readiness=latest_version_readiness,
+            trainable_versions=trainable_versions,
             runs=runs,
             deployed=deployed,
             service_status=service_status,
+        ),
+    )
+
+
+@router.get("/ml/dataset-create")
+def create_dataset_page(request: Request, db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+    require_role(actor, Role.ADMIN)
+    versions = list(db.scalars(select(DatasetVersion).order_by(DatasetVersion.version.desc())).all())
+    sample_usage: dict[str, list[int]] = {}
+    for version in versions:
+        for version_sample in json.loads(version.manifest).get("samples", []):
+            identifier = str(version_sample.get("review_id", ""))
+            if identifier and not identifier.startswith(("manual:", "review:")):
+                identifier = f"review:{identifier}"
+            if identifier:
+                sample_usage.setdefault(identifier, []).append(version.version)
+
+    archived_ids = set(db.scalars(select(MLDatasetPhotoArchive.source_key)).all())
+    archived_ids |= {f"manual:{value}" for value in db.scalars(select(MLDatasetSampleArchive.sample_id)).all()}
+    rows = []
+    for sample in db.scalars(select(MLDatasetSample).order_by(MLDatasetSample.created_at.desc())).all():
+        source_key = f"manual:{sample.id}"
+        rows.append({
+            "id": source_key,
+            "photo_url": photo_url(sample.photo_key),
+            "label": sample.label,
+            "annotations": normalized_annotations(sample.annotations),
+            "source_type": "manual",
+            "source": f"Ручная загрузка · {sample.source_group}",
+            "created_at": sample.created_at,
+            "used_versions": sample_usage.get(source_key, []),
+            "archived": source_key in archived_ids,
+        })
+
+    reviewed = list(db.execute(
+        select(Review, AccessSession)
+        .join(AccessSession, Review.session_id == AccessSession.id)
+        .where(Review.status != ReviewStatus.PENDING)
+        .order_by(func.coalesce(Review.reviewed_at, Review.created_at).desc())
+    ).all())
+    composter_ids = {session.composter_id for _, session in reviewed}
+    composters = {row.id: row for row in db.scalars(select(Composter).where(Composter.id.in_(composter_ids))).all()} if composter_ids else {}
+    for review, session in reviewed:
+        source_key = f"review:{review.id}"
+        composter = composters.get(session.composter_id)
+        rows.append({
+            "id": source_key,
+            "photo_url": photo_url(review.photo_key),
+            "label": "CONTAMINATION" if review.status == ReviewStatus.REJECTED else "CLEAN",
+            "annotations": normalized_annotations(review.annotations),
+            "source_type": "moderated",
+            "source": f"Модерация · {composter.name if composter else session.composter_id}",
+            "created_at": review.reviewed_at or review.created_at,
+            "used_versions": sample_usage.get(source_key, []),
+            "archived": source_key in archived_ids,
+        })
+    rows.sort(key=lambda row: row["created_at"].isoformat() if row["created_at"] else "", reverse=True)
+    return templates.TemplateResponse(
+        request,
+        "ml_dataset_create.html",
+        page_context(
+            request,
+            actor,
+            db,
+            "ml",
+            ml_samples=rows,
+            unused_samples=sum(not row["archived"] and not row["used_versions"] for row in rows),
+            used_samples=sum(not row["archived"] and bool(row["used_versions"]) for row in rows),
+            archived_samples=sum(row["archived"] for row in rows),
+            moderated_samples=sum(row["source_type"] == "moderated" and not row["archived"] for row in rows),
+            annotated_samples=sum(bool(row["annotations"]) and not row["archived"] for row in rows),
+            unannotated_samples=sum(not row["annotations"] and not row["archived"] for row in rows),
         ),
     )
 
@@ -671,19 +748,64 @@ def upload_ml_sample_page(
     db.flush()
     audit(db, actor, "ml_sample", sample.id, "ML_SAMPLE_UPLOADED", {"label": normalized_label, "boxes": len(boxes), "source_group": group})
     db.commit()
-    return RedirectResponse("/web/ml", 303)
+    return RedirectResponse("/web/ml/dataset-create", 303)
 
 
-@router.post("/ml/datasets")
-def freeze_dataset_page(
+@router.post("/ml/samples/archive")
+def archive_ml_samples_page(
     request: Request,
+    sample_ids: list[str] = Form(default=[]),
+    action: str = Form("archive"),
     csrf_token: str = Form(),
     db: Session = Depends(get_db),
     actor: User = Depends(web_current_user),
 ):
     csrf(request, csrf_token)
     require_role(actor, Role.ADMIN)
-    row = freeze_dataset_version(db, actor.id)
+    identifiers = {value if ":" in value else f"manual:{value}" for value in sample_ids}
+    if not identifiers:
+        raise HTTPException(422, "Выберите хотя бы одно фото")
+    manual_ids = {value.removeprefix("manual:") for value in identifiers if value.startswith("manual:")}
+    review_ids = {value.removeprefix("review:") for value in identifiers if value.startswith("review:")}
+    if len(manual_ids) + len(review_ids) != len(identifiers):
+        raise HTTPException(422, "Неизвестный источник фотографии")
+    samples = list(db.scalars(select(MLDatasetSample).where(MLDatasetSample.id.in_(manual_ids))).all()) if manual_ids else []
+    reviews = list(db.scalars(select(Review).where(Review.id.in_(review_ids), Review.status != ReviewStatus.PENDING)).all()) if review_ids else []
+    if len(samples) != len(manual_ids) or len(reviews) != len(review_ids):
+        raise HTTPException(404, "Часть фотографий не найдена")
+    archives = {row.source_key: row for row in db.scalars(select(MLDatasetPhotoArchive).where(MLDatasetPhotoArchive.source_key.in_(identifiers))).all()}
+    if action == "archive":
+        for identifier in identifiers:
+            if identifier not in archives:
+                db.add(MLDatasetPhotoArchive(source_key=identifier, archived_by=actor.id))
+        audit(db, actor, "ml_sample", actor.id, "ML_SAMPLES_ARCHIVED", {"source_keys": sorted(identifiers)})
+    elif action == "restore":
+        for archive in archives.values():
+            db.delete(archive)
+        if manual_ids:
+            for archive in db.scalars(select(MLDatasetSampleArchive).where(MLDatasetSampleArchive.sample_id.in_(manual_ids))).all():
+                db.delete(archive)
+        audit(db, actor, "ml_sample", actor.id, "ML_SAMPLES_RESTORED", {"source_keys": sorted(identifiers)})
+    else:
+        raise HTTPException(422, "Неизвестное действие")
+    db.commit()
+    return RedirectResponse("/web/ml/dataset-create", 303)
+
+
+@router.post("/ml/datasets")
+def freeze_dataset_page(
+    request: Request,
+    sample_ids: list[str] = Form(default=[]),
+    csrf_token: str = Form(),
+    db: Session = Depends(get_db),
+    actor: User = Depends(web_current_user),
+):
+    csrf(request, csrf_token)
+    require_role(actor, Role.ADMIN)
+    try:
+        row = freeze_dataset_version(db, actor.id, sample_ids)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     audit(db, actor, "dataset", row.id, "ML_DATASET_FROZEN", {"version": row.version})
     db.commit()
     return RedirectResponse("/web/ml", 303)
@@ -725,6 +847,8 @@ def queue_training_page(
     if active:
         raise HTTPException(409, "Обучение уже поставлено в очередь")
     readiness = training_readiness(json.loads(dataset.manifest))
+    if not readiness["privacy_safe"]:
+        raise HTTPException(422, "Эта версия использует старую или небезопасную схему данных и запрещена для обучения")
     if not readiness["trainable"]:
         raise HTTPException(422, "Недостаточно данных даже для экспериментального обучения")
     run = ModelTrainingRun(dataset_version=dataset.version, requested_by=actor.id)

@@ -5,69 +5,19 @@
   <div>
     <p class="eyebrow">MACHINE LEARNING</p>
     <h1>Детектор загрязнений</h1>
-    <p class="muted">Модерация собирает разметку, версии датасета фиксируют снимок данных, а обучение выпускает проверяемую модель.</p>
+    <p class="muted">Управление версиями датасета, обучением и публикацией модели.</p>
   </div>
-  <span class="status {{ 'ok' if service_status.status == 'ok' else 'off' }}">{{ 'Обученная модель' if service_status.trained_model_active else 'Эвристика v1' }}</span>
+  <div class="page-actions">
+    <a class="button-link" href="/web/ml/dataset-create">Создать датасет</a>
+    <span class="status {{ 'ok' if service_status.status == 'ok' else 'off' }}">{{ 'Обученная модель' if service_status.trained_model_active else 'Эвристика v1' }}</span>
+  </div>
 </header>
 
-<section class="panel ml-upload-panel">
-  <div><p class="eyebrow">РУЧНОЙ ПРИМЕР</p><h2>Добавить фото в датасет</h2></div>
-  <form method="post" action="/web/ml/samples" enctype="multipart/form-data" id="ml-sample-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="annotations" value="[]" id="ml-annotations">
-    <div class="ml-upload-fields">
-      <label>Класс<select name="label" id="ml-label"><option value="CLEAN">Чистый компост</option><option value="CONTAMINATION">Загрязнение</option></select></label>
-      <label>Источник<input name="source_group" value="manual" maxlength="120"></label>
-      <label>Фото<input type="file" name="file" id="ml-photo" accept="image/jpeg,image/png,image/webp" required></label>
-    </div>
-    <div class="ml-annotator" id="ml-annotator" hidden><img alt="Разметка ML-примера"><canvas></canvas></div>
-    <div class="ml-annotation-actions" id="ml-annotation-actions" hidden><button type="button" class="secondary" data-ml-action="undo">Удалить последнюю рамку</button><button type="button" class="secondary" data-ml-action="clear">Очистить разметку</button></div>
-    <p class="muted" id="ml-upload-status">Для загрязнения выделите каждый посторонний объект прямоугольником.</p>
-    <button>Добавить пример</button>
-  </form>
-</section>
-
 <section class="stats ml-stats">
-  <article><small>Проверено</small><strong>{{ reviewed }}</strong><span>всего фото</span></article>
+  <article><small>Доступно для датасета</small><strong>{{ reviewed }}</strong><span>всего фото</span></article>
   <article><small>Чистый компост</small><strong>{{ approved }}</strong><span>отрицательные примеры</span></article>
   <article><small>Загрязнение</small><strong>{{ contaminated }}</strong><span>положительные примеры</span></article>
   <article><small>С прямоугольниками</small><strong>{{ annotated }}</strong><span>для детектора</span></article>
-  <article><small>Загружено вручную</small><strong>{{ manual_samples }}</strong><span>ML-примеров</span></article>
-</section>
-
-<section class="ml-grid">
-  <article class="panel">
-    <p class="eyebrow">ЕЖЕНЕДЕЛЬНЫЙ ЦИКЛ</p>
-    <h2>От фото до новой модели</h2>
-    <ol class="ml-steps">
-      <li><strong>Собираем</strong><span>Фото автоматически попадают в MinIO.</span></li>
-      <li><strong>Размечаем</strong><span>Модератор отмечает загрязнение прямоугольниками.</span></li>
-      <li><strong>Фиксируем</strong><span>Создаём неизменяемую версию датасета.</span></li>
-      <li><strong>Обучаем</strong><span>YOLO учится и проходит отдельные val/test-наборы.</span></li>
-      <li><strong>Разворачиваем</strong><span>ONNX включается только после проверки метрик.</span></li>
-    </ol>
-    <div class="ml-actions">
-      <form method="post" action="/web/ml/datasets">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button>Загрузить последние собранные данные</button>
-      </form>
-      <button type="button" class="secondary" onclick="downloadDataset()">Скачать текущий JSON</button>
-    </div>
-  </article>
-
-  <article class="panel">
-    <p class="eyebrow">ГОТОВНОСТЬ ДАННЫХ</p>
-    <h2>{{ "Можно запускать пилот" if readiness.ready else "Продолжаем сбор" }}</h2>
-    <div class="readiness-list">
-      {% for key, check in readiness.checks.items() %}
-      <div>
-        <span>{{ {"samples":"Проверенные фото","contamination_boxes":"Размеченные загрязнения","composters":"Разные компостеры"}[key] }}</span>
-        <strong class="{{ 'ready' if check.actual >= check.recommended else 'waiting' }}">{{ check.actual }} · минимум {{ check.minimum }} · цель {{ check.recommended }}</strong>
-      </div>
-      {% endfor %}
-    </div>
-    <p class="muted">Это стартовые пороги для пилота, а не гарантия качества. Решение о выпуске принимается по recall загрязнений, ложным пропускам и тесту на новых компостерах.</p>
-  </article>
 </section>
 
 <section class="panel ml-control">
@@ -75,37 +25,46 @@
     <p class="eyebrow">MODEL CONTROL</p>
     <h2>Обучение и публикация</h2>
     {% if deployed %}
-    <p class="muted">Активна модель запуска {{ deployed.id[:8] }} на dataset-v{{ deployed.dataset_version }} · {{ deployed.deployed_at }}</p>
+    <p class="muted">Активна модель запуска {{ deployed.id[:8] }} на v{{ deployed.dataset_version }} — {{ deployed.deployed_at }}</p>
     {% else %}
     <p class="muted">Обученная модель ещё не опубликована. Сервис использует прозрачную временную эвристику.</p>
     {% endif %}
   </div>
-  {% if latest_version %}
-  <form method="post" action="/web/ml/train">
+  {% if trainable_versions %}
+  <form method="post" action="/web/ml/train" class="ml-training-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="dataset_version" value="{{ latest_version.version }}">
-    <button {% if not readiness.trainable or (runs and runs[0].status in ['QUEUED','RUNNING']) %}disabled{% endif %}>Запустить обучение dataset-v{{ latest_version.version }}</button>
+    <label>Версия датасета
+      <select name="dataset_version">
+        {% for item in trainable_versions %}<option value="{{ item.version.version }}">v{{ item.version.version }} — {{ item.version.sample_count }} фото</option>{% endfor %}
+      </select>
+    </label>
+    <button {% if runs and runs[0].status in ['QUEUED','RUNNING'] %}disabled title="Обучение уже запущено"{% endif %}>Запустить обучение</button>
   </form>
+  {% elif latest_version %}
+  <div class="ml-training-unavailable">
+    <a class="button-link" href="/web/ml/dataset-create">Дополнить данные</a>
+    <small>Для обучения нужно минимум {{ latest_version_readiness.checks.samples.minimum }} фото, {{ latest_version_readiness.checks.contamination_boxes.minimum }} размеченных загрязнения и {{ latest_version_readiness.checks.sources.minimum }} источника. В v{{ latest_version.version }}: {{ latest_version_readiness.checks.samples.actual }}, {{ latest_version_readiness.checks.contamination_boxes.actual }} и {{ latest_version_readiness.checks.sources.actual }}.</small>
+  </div>
   {% else %}
-  <button disabled>Сначала загрузите данные</button>
+  <a class="button-link" href="/web/ml/dataset-create">Создать первый датасет</a>
   {% endif %}
 </section>
 
 <section class="panel">
   <div class="section-heading">
     <div><p class="eyebrow">DATASET REGISTRY</p><h2>Зафиксированные версии</h2></div>
-    <span class="status ok">{{ versions|length }} версий</span>
+    {% if versions %}<span class="status ok">v{{ versions[0].version }}</span>{% endif %}
   </div>
   <div class="dataset-list">
     {% for version in versions %}
     <article>
-      <div><strong>dataset-v{{ version.version }}</strong><small>{{ version.created_at }}</small></div>
+      <div><strong>v{{ version.version }}</strong><small>{{ version.created_at }}</small></div>
       <span>{{ version.sample_count }} фото</span>
       <span>{{ version.annotated_count }} с разметкой</span>
       <a href="/web/ml/datasets/{{ version.version }}.json">JSON ↓</a>
     </article>
     {% else %}
-    <p class="muted">Версий пока нет. Зафиксируйте первую после проверки разметки.</p>
+    <p class="muted">Версий пока нет.</p>
     {% endfor %}
   </div>
 </section>
@@ -117,7 +76,7 @@
   <div class="dataset-list training-list">
     {% for run in runs %}
     <article>
-      <div><strong>{{ run.id[:8] }}</strong><small>dataset-v{{ run.dataset_version }} · {{ run.created_at }}</small></div>
+      <div><strong>{{ run.id[:8] }}</strong><small>v{{ run.dataset_version }} — {{ run.created_at }}</small></div>
       <span class="status {{ 'ok' if run.status == 'PASSED' else 'off' if run.status in ['FAILED','REJECTED'] else 'warn' }}">{{ run.status }}</span>
       <span>{% if run.completed_at %}{{ run.completed_at }}{% else %}ожидание{% endif %}</span>
       {% if run.status == 'PASSED' %}
@@ -129,56 +88,4 @@
     {% endfor %}
   </div>
 </section>
-{% endblock %}
-
-{% block scripts %}
-<script>
-function downloadDataset() {
-  const data = {{ dataset|tojson }};
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([data], {type: 'application/json'}));
-  link.download = 'compost-dataset-current.json';
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-(() => {
-  const form = document.getElementById('ml-sample-form');
-  const input = document.getElementById('ml-photo');
-  const label = document.getElementById('ml-label');
-  const host = document.getElementById('ml-annotator');
-  const actions = document.getElementById('ml-annotation-actions');
-  const image = host.querySelector('img');
-  const canvas = host.querySelector('canvas');
-  const field = document.getElementById('ml-annotations');
-  const status = document.getElementById('ml-upload-status');
-  let boxes = [], start = null, objectUrl = null;
-  const sync = () => { field.value = JSON.stringify(boxes); };
-  const render = draft => {
-    const context = canvas.getContext('2d');
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    [...boxes, ...(draft ? [draft] : [])].forEach(box => {
-      context.strokeStyle = '#d7ff39'; context.lineWidth = 3;
-      context.strokeRect(box.x * canvas.width, box.y * canvas.height, box.width * canvas.width, box.height * canvas.height);
-    });
-    sync();
-  };
-  const resize = () => { canvas.width = image.clientWidth; canvas.height = image.clientHeight; render(); };
-  const point = event => { const rect = canvas.getBoundingClientRect(); return {x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height}; };
-  input.onchange = () => {
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    boxes = []; sync();
-    const file = input.files[0]; host.hidden = !file; actions.hidden = !file || label.value !== 'CONTAMINATION';
-    if (file) { objectUrl = URL.createObjectURL(file); image.src = objectUrl; }
-  };
-  image.onload = resize;
-  new ResizeObserver(resize).observe(host);
-  label.onchange = () => { boxes = []; render(); actions.hidden = host.hidden || label.value !== 'CONTAMINATION'; status.hidden = label.value !== 'CONTAMINATION'; };
-  canvas.onpointerdown = event => { if (label.value !== 'CONTAMINATION') return; start = point(event); canvas.setPointerCapture(event.pointerId); };
-  canvas.onpointermove = event => { if (!start) return; const end=point(event); render({x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)}); };
-  canvas.onpointerup = event => { if (!start) return; const end=point(event), box={x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y),label:'contamination'}; if(box.width>.01&&box.height>.01) boxes.push(box); start=null; render(); };
-  actions.querySelector('[data-ml-action="undo"]').onclick = () => { boxes.pop(); render(); };
-  actions.querySelector('[data-ml-action="clear"]').onclick = () => { boxes=[]; render(); };
-  form.onsubmit = event => { if (label.value === 'CONTAMINATION' && boxes.length === 0) { event.preventDefault(); status.hidden=false; status.textContent='Отметьте хотя бы одну область загрязнения.'; } };
-})();
-</script>
 {% endblock %}

@@ -101,6 +101,10 @@ services:
       ML_EPOCHS: ${ML_EPOCHS:-60}
       ML_IMAGE_SIZE: ${ML_IMAGE_SIZE:-640}
       ML_CONFIDENCE: ${ML_CONFIDENCE:-0.35}
+      ML_TACO_PRETRAIN: ${ML_TACO_PRETRAIN:-true}
+      ML_TACO_ROOT: /root/.cache/compost/taco
+      ML_TACO_EPOCHS: ${ML_TACO_EPOCHS:-30}
+      ML_TACO_DOWNLOAD_WORKERS: ${ML_TACO_DOWNLOAD_WORKERS:-8}
     depends_on:
       postgres: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}

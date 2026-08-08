@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}Создание датасета{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">FINE-TUNING DATASET</p>
+    <h1>Создание датасета</h1>
+    <p class="muted">Выберите фотографии, которые войдут в новую неизменяемую версию.</p>
+  </div>
+  <a class="button-link secondary-link" href="/web/ml">Назад к ML</a>
+</header>
+
+<section class="panel ml-sample-selector" id="ml-sample-selection">
+  <div class="section-heading">
+    <div><h2>Фотографии</h2><p class="muted">В списке есть ручные загрузки и фотографии с завершённой модерацией.</p></div>
+    <span class="status ok ml-selected-status"><span id="ml-selected-count">0</span><span>выбрано</span></span>
+  </div>
+  <div class="ml-sample-filters" role="group" aria-label="Фильтры фотографий">
+    <button type="button" class="secondary" data-ml-filter="all">Все — {{ ml_samples|length - archived_samples }}</button>
+    <button type="button" class="secondary active" data-ml-filter="unused" data-ml-filter-group="state" aria-pressed="true">Неиспользованные — {{ unused_samples }}</button>
+    <button type="button" class="secondary" data-ml-filter="used" data-ml-filter-group="state" aria-pressed="false">Использованные — {{ used_samples }}</button>
+    <button type="button" class="secondary" data-ml-filter="archived" data-ml-filter-group="state" aria-pressed="false">Убранные — {{ archived_samples }}</button>
+    <button type="button" class="secondary" data-ml-filter="moderated" data-ml-filter-group="source" aria-pressed="false">После модерации — {{ moderated_samples }}</button>
+    <button type="button" class="secondary" data-ml-filter="annotated" data-ml-filter-group="annotation" aria-pressed="false">С разметкой — {{ annotated_samples }}</button>
+    <button type="button" class="secondary" data-ml-filter="unannotated" data-ml-filter-group="annotation" aria-pressed="false">Без разметки — {{ unannotated_samples }}</button>
+  </div>
+  <div class="ml-sample-list" id="ml-sample-list">
+    {% for row in ml_samples %}
+    {% set state = 'archived' if row.archived else 'used' if row.used_versions else 'unused' %}
+    <div class="ml-sample-row" data-ml-state="{{ state }}" data-ml-source="{{ row.source_type }}" data-ml-annotated="{{ 'true' if row.annotations else 'false' }}" {% if state != 'unused' %}hidden{% endif %}>
+      <input type="checkbox" class="ml-sample-check" value="{{ row.id }}" aria-label="Выбрать фото" {% if state == 'unused' %}checked{% endif %}>
+      <button type="button" class="ml-sample-photo" data-ml-photo="{{ row.photo_url }}" data-ml-photo-boxes='{{ row.annotations|tojson }}' data-ml-photo-title="{{ 'Загрязнение' if row.label == 'CONTAMINATION' else 'Чистый компост' }} — {{ row.source }}" aria-label="Открыть фото подробнее"><img src="{{ row.photo_url }}" alt="Фото для датасета" loading="lazy"></button>
+      <span class="ml-sample-main">
+        <strong>{{ 'Загрязнение' if row.label == 'CONTAMINATION' else 'Чистый компост' }}</strong>
+        <small>{{ row.source }} — {{ row.created_at }}</small>
+        <small class="ml-annotation-state {{ 'has-boxes' if row.annotations else '' }}">{{ 'Есть разметка — ' ~ (row.annotations|length) if row.annotations else 'Без разметки' }}</small>
+      </span>
+      {% if row.archived %}<span class="status off">Убрано</span>
+      {% elif row.used_versions %}<span class="status warn">v{{ row.used_versions|max }}</span>
+      {% else %}<span class="status ok">Новое</span>{% endif %}
+    </div>
+    {% else %}
+    <p class="muted">Подходящих фотографий пока нет.</p>
+    {% endfor %}
+  </div>
+  <div class="ml-sample-actions">
+    <div><button type="button" class="secondary" data-ml-select="visible">Выбрать показанные</button><button type="button" class="secondary" data-ml-select="none">Снять выбор</button></div>
+    <div><button type="button" class="secondary danger" id="ml-archive-selected">Убрать</button><button type="button" class="secondary" id="ml-restore-selected" hidden>Восстановить</button><button type="button" id="ml-create-dataset">Создать датасет</button></div>
+  </div>
+  <form method="post" action="/web/ml/datasets" id="ml-dataset-selection-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form method="post" action="/web/ml/samples/archive" id="ml-sample-archive-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="archive"></form>
+</section>
+
+<dialog id="ml-photo-viewer" class="photo-dialog storage-photo-dialog">
+  <div class="annotation-stage history-stage">
+    <img src="" alt="Просмотр фотографии">
+    <canvas></canvas>
+  </div>
+  <button type="button" class="dialog-close" aria-label="Закрыть">×</button>
+</dialog>
+
+<details class="panel compact-details ml-manual-details">
+  <summary>
+    <span><span class="eyebrow">РУЧНОЙ ПРИМЕР</span><strong>Добавить фото вручную</strong></span>
+    <span class="details-toggle">Раскрыть</span>
+  </summary>
+  <div class="details-body ml-upload-panel">
+    <form method="post" action="/web/ml/samples" enctype="multipart/form-data" id="ml-sample-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="annotations" value="[]" id="ml-annotations">
+      <div class="ml-upload-fields">
+        <label>Класс<select name="label" id="ml-label"><option value="CLEAN">Чистый компост</option><option value="CONTAMINATION">Загрязнение</option></select></label>
+        <label>Источник<input name="source_group" value="manual" maxlength="120"></label>
+        <label>Фото<input type="file" name="file" id="ml-photo" accept="image/jpeg,image/png,image/webp" required></label>
+      </div>
+      <div class="ml-annotator" id="ml-annotator" hidden><img alt="Разметка ML-примера"><canvas></canvas></div>
+      <div class="ml-annotation-actions" id="ml-annotation-actions" hidden><button type="button" class="secondary" data-ml-action="undo">Удалить последнюю рамку</button><button type="button" class="secondary" data-ml-action="clear">Очистить разметку</button></div>
+      <p class="muted" id="ml-upload-status">Для загрязнения выделите каждый посторонний объект прямоугольником.</p>
+      <button>Добавить пример</button>
+    </form>
+  </div>
+</details>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const selector = document.getElementById('ml-sample-selection');
+  const rows = [...selector.querySelectorAll('.ml-sample-row')];
+  const filters = [...selector.querySelectorAll('[data-ml-filter]')];
+  const count = document.getElementById('ml-selected-count');
+  const archive = document.getElementById('ml-archive-selected');
+  const restore = document.getElementById('ml-restore-selected');
+  const datasetForm = document.getElementById('ml-dataset-selection-form');
+  const archiveForm = document.getElementById('ml-sample-archive-form');
+  const photoDialog = document.getElementById('ml-photo-viewer');
+  const photoDialogImage = photoDialog.querySelector('img');
+  const photoDialogStage = photoDialog.querySelector('.annotation-stage');
+  const photoDialogCanvas = photoDialog.querySelector('canvas');
+  let viewerBoxes = [];
+  const checked = (visibleOnly = false) => rows.filter(row => (!visibleOnly || !row.hidden) && row.querySelector('.ml-sample-check').checked);
+  const addIds = (form, selected) => {
+    form.querySelectorAll('[data-generated-id]').forEach(input => input.remove());
+    selected.forEach(row => {
+      const input = document.createElement('input');
+      input.type = 'hidden'; input.name = 'sample_ids'; input.value = row.querySelector('.ml-sample-check').value; input.dataset.generatedId = '1';
+      form.appendChild(input);
+    });
+  };
+  const update = () => { count.textContent = checked().filter(row => row.dataset.mlState !== 'archived').length; };
+  const activeFilters = () => filters.filter(button => button.dataset.mlFilterGroup && button.classList.contains('active'));
+  const applyFilters = () => {
+    const active = activeFilters();
+    const allButton = filters.find(button => button.dataset.mlFilter === 'all');
+    allButton.classList.toggle('active', !active.length);
+    allButton.setAttribute('aria-pressed', String(!active.length));
+    const grouped = active.reduce((result, button) => {
+      (result[button.dataset.mlFilterGroup] ||= []).push(button);
+      return result;
+    }, {});
+    rows.forEach(row => {
+      const matchesState = grouped.state ? grouped.state.some(button => row.dataset.mlState === button.dataset.mlFilter) : row.dataset.mlState !== 'archived';
+      const matchesSource = !grouped.source || grouped.source.some(button => row.dataset.mlSource === button.dataset.mlFilter);
+      const matchesAnnotation = !grouped.annotation || grouped.annotation.some(button => row.dataset.mlAnnotated === String(button.dataset.mlFilter === 'annotated'));
+      row.hidden = !(matchesState && matchesSource && matchesAnnotation);
+    });
+    const includesArchived = grouped.state?.some(button => button.dataset.mlFilter === 'archived');
+    const includesNonArchived = !grouped.state || grouped.state.some(button => button.dataset.mlFilter !== 'archived');
+    archive.hidden = !includesNonArchived; restore.hidden = !includesArchived; update();
+  };
+  filters.forEach(button => button.onclick = () => {
+    if (button.dataset.mlFilter === 'all') {
+      filters.forEach(item => { item.classList.remove('active'); item.setAttribute('aria-pressed', 'false'); });
+    } else {
+      button.classList.toggle('active');
+      button.setAttribute('aria-pressed', String(button.classList.contains('active')));
+    }
+    applyFilters();
+  });
+  selector.querySelector('[data-ml-select="visible"]').onclick = () => { rows.filter(row => !row.hidden).forEach(row => row.querySelector('.ml-sample-check').checked = true); update(); };
+  selector.querySelector('[data-ml-select="none"]').onclick = () => { rows.forEach(row => row.querySelector('.ml-sample-check').checked = false); update(); };
+  rows.forEach(row => {
+    const checkbox = row.querySelector('.ml-sample-check');
+    checkbox.onchange = update;
+    row.onclick = event => { if (event.target.closest('button,input,a')) return; checkbox.checked = !checkbox.checked; update(); };
+  });
+  const drawViewerBoxes = () => {
+    const stageRect = photoDialogStage.getBoundingClientRect();
+    if (!stageRect.width || !stageRect.height || !photoDialogImage.naturalWidth) return;
+    const dpr = window.devicePixelRatio || 1;
+    photoDialogCanvas.width = Math.round(stageRect.width * dpr);
+    photoDialogCanvas.height = Math.round(stageRect.height * dpr);
+    const context = photoDialogCanvas.getContext('2d');
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, stageRect.width, stageRect.height);
+    const imageRatio = photoDialogImage.naturalWidth / photoDialogImage.naturalHeight;
+    const stageRatio = stageRect.width / stageRect.height;
+    const width = imageRatio > stageRatio ? stageRect.width : stageRect.height * imageRatio;
+    const height = imageRatio > stageRatio ? stageRect.width / imageRatio : stageRect.height;
+    const left = (stageRect.width - width) / 2;
+    const top = (stageRect.height - height) / 2;
+    context.strokeStyle = '#caff32'; context.fillStyle = 'rgba(202,255,50,.12)'; context.lineWidth = 3;
+    viewerBoxes.forEach(box => {
+      const x = left + box.x * width, y = top + box.y * height, boxWidth = box.width * width, boxHeight = box.height * height;
+      context.fillRect(x, y, boxWidth, boxHeight); context.strokeRect(x, y, boxWidth, boxHeight);
+    });
+    photoDialogCanvas.dataset.renderedBoxes = String(viewerBoxes.length);
+  };
+  selector.querySelectorAll('[data-ml-photo]').forEach(button => button.onclick = () => {
+    viewerBoxes = JSON.parse(button.dataset.mlPhotoBoxes || '[]');
+    photoDialogImage.src = button.dataset.mlPhoto;
+    photoDialogImage.alt = button.dataset.mlPhotoTitle;
+    photoDialog.showModal();
+    requestAnimationFrame(drawViewerBoxes);
+  });
+  photoDialogImage.addEventListener('load', drawViewerBoxes);
+  new ResizeObserver(drawViewerBoxes).observe(photoDialogStage);
+  photoDialog.querySelector('.dialog-close').onclick = () => photoDialog.close();
+  photoDialog.onclick = event => { if (event.target === photoDialog) photoDialog.close(); };
+  document.getElementById('ml-create-dataset').onclick = () => {
+    const selected = checked().filter(row => row.dataset.mlState !== 'archived');
+    if (!selected.length) { alert('Выберите хотя бы одно фото.'); return; }
+    addIds(datasetForm, selected); datasetForm.submit();
+  };
+  archive.onclick = () => {
+    const selected = checked(true);
+    if (!selected.length) { alert('Выберите фотографии, которые нужно убрать.'); return; }
+    if (!confirm(`Убрать выбранные фото (${selected.length}) из будущих датасетов? Их можно будет восстановить.`)) return;
+    archiveForm.querySelector('[name="action"]').value = 'archive'; addIds(archiveForm, selected); archiveForm.submit();
+  };
+  restore.onclick = () => {
+    const selected = checked(true);
+    if (!selected.length) { alert('Выберите фотографии для восстановления.'); return; }
+    archiveForm.querySelector('[name="action"]').value = 'restore'; addIds(archiveForm, selected); archiveForm.submit();
+  };
+  applyFilters();
+})();
+(() => {
+  const form = document.getElementById('ml-sample-form');
+  const input = document.getElementById('ml-photo');
+  const label = document.getElementById('ml-label');
+  const host = document.getElementById('ml-annotator');
+  const actions = document.getElementById('ml-annotation-actions');
+  const image = host.querySelector('img');
+  const canvas = host.querySelector('canvas');
+  const field = document.getElementById('ml-annotations');
+  const status = document.getElementById('ml-upload-status');
+  let boxes = [], start = null, objectUrl = null;
+  const sync = () => { field.value = JSON.stringify(boxes); };
+  const render = draft => {
+    const context = canvas.getContext('2d'); context.clearRect(0, 0, canvas.width, canvas.height);
+    [...boxes, ...(draft ? [draft] : [])].forEach(box => { context.strokeStyle = '#d7ff39'; context.lineWidth = 3; context.strokeRect(box.x * canvas.width, box.y * canvas.height, box.width * canvas.width, box.height * canvas.height); });
+    sync();
+  };
+  const resize = () => { canvas.width = image.clientWidth; canvas.height = image.clientHeight; render(); };
+  const point = event => { const rect = canvas.getBoundingClientRect(); return {x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height}; };
+  input.onchange = () => { if (objectUrl) URL.revokeObjectURL(objectUrl); boxes = []; sync(); const file = input.files[0]; host.hidden = !file; actions.hidden = !file || label.value !== 'CONTAMINATION'; if (file) { objectUrl = URL.createObjectURL(file); image.src = objectUrl; } };
+  image.onload = resize; window.addEventListener('resize', resize);
+  label.onchange = () => { if (label.value === 'CLEAN') boxes = []; actions.hidden = !input.files[0] || label.value !== 'CONTAMINATION'; status.textContent = label.value === 'CONTAMINATION' ? 'Для загрязнения выделите каждый посторонний объект прямоугольником.' : 'Чистый пример сохраняется без рамок.'; render(); };
+  canvas.onpointerdown = event => { if (label.value !== 'CONTAMINATION') return; start = point(event); canvas.setPointerCapture(event.pointerId); };
+  canvas.onpointermove = event => { if (!start) return; const end = point(event); render({x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)}); };
+  canvas.onpointerup = event => { if (!start) return; const end = point(event); const box = {x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y),label:'contamination'}; start = null; if (box.width > .01 && box.height > .01) boxes.push(box); render(); };
+  actions.querySelector('[data-ml-action="undo"]').onclick = () => { boxes.pop(); render(); };
+  actions.querySelector('[data-ml-action="clear"]').onclick = () => { boxes = []; render(); };
+  form.onsubmit = event => { if (label.value === 'CONTAMINATION' && !boxes.length) { event.preventDefault(); status.textContent = 'Отметьте хотя бы один загрязняющий объект.'; } };
+})();
+</script>
+{% endblock %}

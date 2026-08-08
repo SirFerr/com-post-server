@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import AccessSession, DatasetVersion, MLDatasetSample, Review, ReviewStatus
+from .models import AccessSession, DatasetVersion, MLDatasetPhotoArchive, MLDatasetSample, MLDatasetSampleArchive, Review, ReviewStatus
 
 
-DATASET_SCHEMA_VERSION = 3
+DATASET_SCHEMA_VERSION = 5
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -21,7 +21,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def split_by_composter(composter_ids: list[str]) -> dict[str, str]:
-    """Assign whole composters to stable splits so near-duplicate scenes cannot leak."""
+    """Assign whole sources to stable splits so related scenes cannot leak."""
     groups = sorted(set(composter_ids), key=lambda value: hashlib.sha256(value.encode()).hexdigest())
     count = len(groups)
     if count == 1:
@@ -44,37 +44,39 @@ def split_by_composter(composter_ids: list[str]) -> dict[str, str]:
     }
 
 
-def build_dataset_manifest(db: Session) -> dict:
-    rows = db.execute(
+def build_dataset_manifest(db: Session, sample_ids: list[str] | None = None) -> dict:
+    legacy_archived_ids = {f"manual:{value}" for value in db.scalars(select(MLDatasetSampleArchive.sample_id)).all()}
+    archived_ids = legacy_archived_ids | set(db.scalars(select(MLDatasetPhotoArchive.source_key)).all())
+    requested_ids = set(sample_ids) if sample_ids is not None else None
+    if requested_ids is not None:
+        requested_ids = {value if ":" in value else f"manual:{value}" for value in requested_ids}
+    manual_rows = list(db.scalars(select(MLDatasetSample).order_by(MLDatasetSample.created_at, MLDatasetSample.id)).all())
+    manual_rows = [
+        sample for sample in manual_rows
+        if f"manual:{sample.id}" not in archived_ids and (requested_ids is None or f"manual:{sample.id}" in requested_ids)
+    ]
+    review_rows = list(db.execute(
         select(Review, AccessSession)
         .join(AccessSession, Review.session_id == AccessSession.id)
         .where(Review.status != ReviewStatus.PENDING)
         .order_by(Review.created_at, Review.id)
-    ).all()
-    manual_rows = list(db.scalars(select(MLDatasetSample).order_by(MLDatasetSample.created_at, MLDatasetSample.id)).all())
-    review_groups = [f"composter:{session.composter_id}" for _, session in rows]
+    ).all())
+    review_rows = [
+        (review, session) for review, session in review_rows
+        if f"review:{review.id}" not in archived_ids and (requested_ids is None or f"review:{review.id}" in requested_ids)
+    ]
+    if requested_ids is not None:
+        selected_ids = {f"manual:{sample.id}" for sample in manual_rows} | {f"review:{review.id}" for review, _ in review_rows}
+        unavailable = requested_ids - selected_ids
+        if unavailable:
+            raise ValueError("Some selected photos are missing, pending moderation, or archived")
+        if not manual_rows and not review_rows:
+            raise ValueError("Select at least one ML photo")
     manual_groups = [f"manual:{sample.source_group}" for sample in manual_rows]
-    all_groups = review_groups + manual_groups
+    review_groups = [f"composter:{session.composter_id}" for _, session in review_rows]
+    all_groups = manual_groups + review_groups
     assignments = split_by_composter(all_groups) if all_groups else {}
     samples = []
-    for review, session in rows:
-        boxes = json.loads(review.annotations or "[]")
-        group = f"composter:{session.composter_id}"
-        samples.append({
-            "review_id": review.id,
-            "photo_key": review.photo_key,
-            "label": "clean" if review.status == ReviewStatus.APPROVED else "contamination",
-            "moderation_status": review.status.value,
-            "violation": review.violation_reason,
-            "boxes": boxes,
-            "split": assignments[group],
-            "source": "moderation",
-            "source_group": group,
-            "composter_id": session.composter_id,
-            "user_id": session.user_id,
-            "captured_at": _iso(review.created_at),
-            "reviewed_at": _iso(review.reviewed_at),
-        })
     for sample in manual_rows:
         group = f"manual:{sample.source_group}"
         samples.append({
@@ -92,6 +94,24 @@ def build_dataset_manifest(db: Session) -> dict:
             "captured_at": _iso(sample.created_at),
             "reviewed_at": _iso(sample.created_at),
         })
+    for review, session in review_rows:
+        group = f"composter:{session.composter_id}"
+        contaminated = review.status == ReviewStatus.REJECTED
+        samples.append({
+            "review_id": f"review:{review.id}",
+            "photo_key": review.photo_key,
+            "label": "contamination" if contaminated else "clean",
+            "moderation_status": review.status.value,
+            "violation": review.violation_reason if contaminated else None,
+            "boxes": json.loads(review.annotations or "[]"),
+            "split": assignments[group],
+            "source": "moderation",
+            "source_group": group,
+            "composter_id": session.composter_id,
+            "user_id": None,
+            "captured_at": _iso(review.created_at),
+            "reviewed_at": _iso(review.reviewed_at),
+        })
 
     labels = Counter(sample["label"] for sample in samples)
     splits = Counter(sample["split"] for sample in samples)
@@ -103,13 +123,16 @@ def build_dataset_manifest(db: Session) -> dict:
         "schema_version": DATASET_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "classes": ["contamination"],
-        "split_strategy": "grouped-by-source-sha256-v2",
+        "selection_policy": "admin-selected-reviewed-v1",
+        "privacy_policy": "minimized-reviewed-photos-v1",
+        "split_strategy": "grouped-by-source-sha256-v4",
         "summary": {
             "samples": len(samples),
             "annotated": annotated,
             "annotated_contamination": annotated_contamination,
-            "composters": len(assignments),
+            "sources": len(assignments),
             "manual_samples": len(manual_rows),
+            "moderated_samples": len(review_rows),
             "labels": dict(labels),
             "splits": dict(splits),
         },
@@ -119,6 +142,17 @@ def build_dataset_manifest(db: Session) -> dict:
 
 def training_readiness(manifest: dict) -> dict:
     summary = manifest["summary"]
+    privacy_safe = (
+        manifest.get("schema_version", 0) >= 5
+        and manifest.get("selection_policy") == "admin-selected-reviewed-v1"
+        and manifest.get("privacy_policy") == "minimized-reviewed-photos-v1"
+        and all(
+            sample.get("source") in {"manual", "moderation"}
+            and sample.get("user_id") is None
+            and (sample.get("source") != "moderation" or sample.get("moderation_status") in {"APPROVED", "REJECTED"})
+            for sample in manifest.get("samples", [])
+        )
+    )
     checks = {
         "samples": {"actual": summary["samples"], "minimum": 6, "recommended": 200},
         "contamination_boxes": {
@@ -126,17 +160,23 @@ def training_readiness(manifest: dict) -> dict:
             "minimum": 2,
             "recommended": 50,
         },
-        "composters": {"actual": summary["composters"], "minimum": 2, "recommended": 3},
+        "sources": {"actual": summary.get("sources", 0), "minimum": 2, "recommended": 3},
     }
     return {
-        "trainable": all(item["actual"] >= item["minimum"] for item in checks.values()),
-        "ready": all(item["actual"] >= item["recommended"] for item in checks.values()),
+        "privacy_safe": privacy_safe,
+        "trainable": privacy_safe and all(item["actual"] >= item["minimum"] for item in checks.values()),
+        "ready": privacy_safe and all(item["actual"] >= item["recommended"] for item in checks.values()),
         "checks": checks,
     }
 
 
-def freeze_dataset_version(db: Session, created_by: str) -> DatasetVersion:
-    manifest = build_dataset_manifest(db)
+def require_private_training_manifest(manifest: dict) -> None:
+    if not training_readiness(manifest)["privacy_safe"]:
+        raise ValueError("Training dataset contains unreviewed, legacy, or non-minimized photos")
+
+
+def freeze_dataset_version(db: Session, created_by: str, sample_ids: list[str] | None = None) -> DatasetVersion:
+    manifest = build_dataset_manifest(db, sample_ids)
     summary = manifest["summary"]
     version = (db.scalar(select(func.max(DatasetVersion.version))) or 0) + 1
     row = DatasetVersion(

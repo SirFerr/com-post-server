@@ -8,7 +8,7 @@ from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
 from app.ml_dataset import build_dataset_manifest
-from app.models import AccessSession, AuditLog, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
+from app.models import AccessSession, AuditLog, DatasetVersion, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
 from tests.conftest import token
 
 
@@ -22,8 +22,14 @@ def test_web_ml_manual_upload_adds_trainable_sample(client, monkeypatch):
     assert login.status_code == 303
     page = client.get("/web/ml")
     assert page.status_code == 200
-    assert 'action="/web/ml/samples"' in page.text
-    assert 'id="ml-annotator"' in page.text
+    assert 'href="/web/ml/dataset-create"' in page.text
+    assert "ЕЖЕНЕДЕЛЬНЫЙ ЦИКЛ" not in page.text
+    assert "ГОТОВНОСТЬ ДАННЫХ" not in page.text
+    create_page = client.get("/web/ml/dataset-create")
+    assert create_page.status_code == 200
+    assert 'action="/web/ml/samples"' in create_page.text
+    assert 'id="ml-annotator"' in create_page.text
+    assert 'data-ml-filter="unused"' in create_page.text
     boxes = [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4, "label": "contamination"}]
     upload = client.post(
         "/web/ml/samples",
@@ -34,12 +40,79 @@ def test_web_ml_manual_upload_adds_trainable_sample(client, monkeypatch):
     assert upload.status_code == 303
     with SessionLocal() as db:
         sample = db.scalars(select(MLDatasetSample)).one()
+        sample_id = sample.id
         assert sample.label == "CONTAMINATION"
         assert sample.source_group == "yard-a"
         manifest = build_dataset_manifest(db)
-        assert manifest["schema_version"] == 3
+        assert manifest["schema_version"] == 5
+        assert manifest["selection_policy"] == "admin-selected-reviewed-v1"
+        assert manifest["privacy_policy"] == "minimized-reviewed-photos-v1"
         assert manifest["samples"][0]["source"] == "manual"
         assert manifest["samples"][0]["boxes"] == boxes
+
+    freeze = client.post(
+        "/web/ml/datasets",
+        data={"sample_ids": sample_id, "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert freeze.status_code == 303
+    with SessionLocal() as db:
+        frozen = json.loads(db.scalars(select(DatasetVersion)).one().manifest)
+        assert [row["review_id"] for row in frozen["samples"]] == [f"manual:{sample_id}"]
+
+    archive = client.post(
+        "/web/ml/samples/archive",
+        data={"sample_ids": sample_id, "action": "archive", "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert archive.status_code == 303
+    with SessionLocal() as db:
+        assert build_dataset_manifest(db)["samples"] == []
+
+    restore = client.post(
+        "/web/ml/samples/archive",
+        data={"sample_ids": sample_id, "action": "restore", "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert restore.status_code == 303
+    with SessionLocal() as db:
+        assert [row["review_id"] for row in build_dataset_manifest(db)["samples"]] == [f"manual:{sample_id}"]
+
+
+def test_ml_dataset_page_and_manifest_include_reviewed_photos(client):
+    assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
+    with SessionLocal() as db:
+        session = AccessSession(id="reviewed-ml-session", user_id="user-1", composter_id="composter-1")
+        pending_session = AccessSession(id="pending-ml-session", user_id="user-1", composter_id="composter-1")
+        db.add_all([session, pending_session])
+        db.flush()
+        db.add(Review(id="reviewed-ml-review", session_id=session.id, status=ReviewStatus.REJECTED, photo_key="reviews/contamination.jpg", annotations='[{"x":0.1,"y":0.1,"width":0.2,"height":0.2}]'))
+        db.add(Review(id="pending-ml-review", session_id=pending_session.id, status=ReviewStatus.PENDING, photo_key="reviews/pending.jpg"))
+        db.add(MLDatasetSample(photo_key="ml/admin-approved.jpg", label="CLEAN", source_group="approved-source", created_by="admin-1"))
+        db.commit()
+        manifest = build_dataset_manifest(db, ["review:reviewed-ml-review"])
+    assert [sample["photo_key"] for sample in manifest["samples"]] == ["reviews/contamination.jpg"]
+    assert manifest["samples"][0]["source"] == "moderation"
+    assert manifest["samples"][0]["user_id"] is None
+    page = client.get("/web/ml/dataset-create")
+    assert page.status_code == 200
+    assert "После модерации" in page.text
+    assert 'value="review:reviewed-ml-review"' in page.text
+    assert 'value="review:pending-ml-review"' not in page.text
+    assert 'data-ml-photo=' in page.text
+    assert 'data-ml-photo-boxes=' in page.text
+    assert 'id="ml-photo-viewer"' in page.text
+    assert "Есть разметка" in page.text
+    assert "Без разметки" in page.text
+
+    archived = client.post(
+        "/web/ml/samples/archive",
+        data={"sample_ids": "review:reviewed-ml-review", "action": "archive", "csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert archived.status_code == 303
+    with SessionLocal() as db:
+        assert all(row["review_id"] != "review:reviewed-ml-review" for row in build_dataset_manifest(db)["samples"])
 
 
 def test_audit_entity_id_accepts_storage_keys():
@@ -328,7 +401,7 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "/static/admin.css?v=24" in page.text
+    assert "/static/admin.css?v=28" in page.text
     assert ".history [hidden]{display:none!important}" in client.get("/static/admin.css").text
     assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
@@ -608,8 +681,10 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     assert dataset.json()["version"] == 1
     manifest = client.get("/admin/ml/datasets/1", headers=admin)
     assert manifest.status_code == 200
-    assert manifest.json()["schema_version"] == 3
-    assert manifest.json()["split_strategy"] == "grouped-by-source-sha256-v2"
+    assert manifest.json()["schema_version"] == 5
+    assert manifest.json()["privacy_policy"] == "minimized-reviewed-photos-v1"
+    assert manifest.json()["split_strategy"] == "grouped-by-source-sha256-v4"
+    assert manifest.json()["samples"] == []
     assert client.post("/web/login", data={"email": "admin@example.com", "password": "Password1!"}, follow_redirects=False).status_code == 303
     violation_detail = client.get(f"/web/violations/{manual.json()['id']}")
     assert violation_detail.status_code == 200

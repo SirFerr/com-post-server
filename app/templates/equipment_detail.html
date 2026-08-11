@@ -41,10 +41,11 @@
     <button type="button" class="history-filter" data-history-filter="ACCESS">Открытия</button>
     <button type="button" class="history-filter" data-history-filter="FULL">Заполненность</button>
     <button type="button" class="history-filter" data-history-filter="INCIDENT">Инциденты</button>
+    <button type="button" class="history-filter" data-history-filter="VIOLATION">Нарушения</button>
     <button type="button" class="history-filter" data-history-filter="SETTINGS">Настройки</button>
   </div>
   {% for item in history %}
-  <article class="clickable-card" data-history-action="{{ item.action }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+  <article class="clickable-card" data-history-action="{{ item.action }}" data-history-kind="{{ item.tag_class }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
     <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
     <div class="history-meta"><span>{% if item.actor %}<a href="/web/users/{{ item.actor.id }}">{{ item.actor.full_name or item.actor.email }}</a>{% else %}Система{% endif %}</span>{% if item.photo_url %}<button type="button" class="history-photo-link" onclick="document.getElementById('equipment-photo-{{ item.row.id }}').showModal()">Фото</button>{% endif %}</div>
   </div></article>

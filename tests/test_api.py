@@ -530,6 +530,7 @@ def test_staff_web_login_and_role_sections(client):
     assert 'data-history-filter="ACCESS"' in equipment_detail.text
     assert 'data-history-filter="FULL"' in equipment_detail.text
     assert 'data-history-filter="INCIDENT"' in equipment_detail.text
+    assert 'data-history-filter="VIOLATION"' in equipment_detail.text
     assert 'data-history-filter="SETTINGS"' in equipment_detail.text
     assert "Действия и фотографии оборудования" in equipment_detail.text
 
@@ -544,6 +545,14 @@ def test_staff_web_login_and_role_sections(client):
     assert 'data-history-filter="BANS"' in user_detail.text
     assert 'data-history-filter="ROLES"' in user_detail.text
     assert 'data-history-filter="INCIDENT"' in user_detail.text
+    assert 'data-history-filter="VIOLATION"' in user_detail.text
+    assert 'data-history-filter="REVIEW"' in user_detail.text
+    assert 'data-history-filter="EQUIPMENT"' in user_detail.text
+    assert 'data-history-filter="SESSIONS"' in user_detail.text
+    assert 'data-history-filter="STORAGE"' in user_detail.text
+    assert 'data-history-filter="FIRMWARE"' in user_detail.text
+    assert 'data-history-filter="ML"' in user_detail.text
+    assert 'data-history-filter="SYSTEM"' in user_detail.text
     assert "Действия, проверки и фотографии" in user_detail.text
     assert "Сессии компостирования" not in user_detail.text
     role_change = client.post(

@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.ml_dataset import build_dataset_manifest
 from app.models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
+from app.web_support.history import history_presentation
 from tests.conftest import token
 
 
@@ -527,11 +528,14 @@ def test_staff_web_login_and_role_sections(client):
     equipment_detail = client.get("/web/equipment/composter-1")
     assert equipment_detail.status_code == 200
     assert "equipment-confirm" in equipment_detail.text
-    assert 'data-history-filter="ACCESS"' in equipment_detail.text
-    assert 'data-history-filter="FULL"' in equipment_detail.text
-    assert 'data-history-filter="INCIDENT"' in equipment_detail.text
-    assert 'data-history-filter="VIOLATION"' in equipment_detail.text
-    assert 'data-history-filter="SETTINGS"' in equipment_detail.text
+    assert '<details class="panel compact-details action-panel">' in equipment_detail.text
+    assert 'value="ACCESS" data-history-filter-value' in equipment_detail.text
+    assert 'value="FULL" data-history-filter-value' in equipment_detail.text
+    assert 'value="INCIDENT" data-history-filter-value' in equipment_detail.text
+    assert 'value="VIOLATION" data-history-filter-value' not in equipment_detail.text
+    assert 'value="SETTINGS" data-history-filter-value' in equipment_detail.text
+    assert "data-history-date-from" in equipment_detail.text
+    assert "data-history-date-to" in equipment_detail.text
     assert "Действия и фотографии оборудования" in equipment_detail.text
 
     users = client.get("/web/users")
@@ -541,18 +545,21 @@ def test_staff_web_login_and_role_sections(client):
     user_detail = client.get("/web/users/user-1")
     assert user_detail.status_code == 200
     assert "user-confirm" in user_detail.text
-    assert 'data-history-filter="POINTS"' in user_detail.text
-    assert 'data-history-filter="BANS"' in user_detail.text
-    assert 'data-history-filter="ROLES"' in user_detail.text
-    assert 'data-history-filter="INCIDENT"' in user_detail.text
-    assert 'data-history-filter="VIOLATION"' in user_detail.text
-    assert 'data-history-filter="REVIEW"' in user_detail.text
-    assert 'data-history-filter="EQUIPMENT"' in user_detail.text
-    assert 'data-history-filter="SESSIONS"' in user_detail.text
-    assert 'data-history-filter="STORAGE"' in user_detail.text
-    assert 'data-history-filter="FIRMWARE"' in user_detail.text
-    assert 'data-history-filter="ML"' in user_detail.text
-    assert 'data-history-filter="SYSTEM"' in user_detail.text
+    assert 'value="POINTS" data-history-filter-value' in user_detail.text
+    assert 'value="BANS" data-history-filter-value' in user_detail.text
+    assert 'value="ROLES" data-history-filter-value' in user_detail.text
+    assert 'value="INCIDENT" data-history-filter-value' in user_detail.text
+    assert 'value="VIOLATION" data-history-filter-value' not in user_detail.text
+    assert 'value="REVIEW" data-history-filter-value' in user_detail.text
+    assert 'value="EQUIPMENT" data-history-filter-value' in user_detail.text
+    assert 'value="SESSIONS" data-history-filter-value' in user_detail.text
+    assert 'value="STORAGE" data-history-filter-value' in user_detail.text
+    assert 'value="FIRMWARE" data-history-filter-value' in user_detail.text
+    assert 'value="ML" data-history-filter-value' in user_detail.text
+    assert 'value="SYSTEM" data-history-filter-value' in user_detail.text
+    assert "data-history-filter-chips" in user_detail.text
+    assert "data-history-date-from" in user_detail.text
+    assert "data-history-date-to" in user_detail.text
     assert "Действия, проверки и фотографии" in user_detail.text
     assert "Сессии компостирования" not in user_detail.text
     role_change = client.post(
@@ -643,7 +650,7 @@ def test_web_points_filter_includes_legacy_rewards_but_not_review_cards(client):
     assert page.status_code == 200
     assert 'data-history-category="POINTS"' in page.text
     assert '<strong>+10</strong> → 10' in page.text
-    assert "filter==='POINTS'&&category==='POINTS'" in page.text
+    assert "if(filter==='POINTS')return category==='POINTS'" in page.text
     assert "action.startsWith('REVIEW_')" not in page.text
 
 
@@ -842,6 +849,8 @@ def test_refresh_tokens_rotate_and_sessions_can_be_revoked(client):
 
 
 def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
+    assert history_presentation("CONTAMINATION_REPORTED")[1:] == ("Инцидент", "incident")
+    assert history_presentation("VIOLATION_RESOLVED")[1:] == ("Инцидент", "incident")
     admin = auth(token(client, "admin@example.com"))
     engineer = auth(token(client, "engineer@example.com"))
     user = auth(token(client))

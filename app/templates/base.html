@@ -19,16 +19,69 @@
 document.addEventListener('click',event=>{const card=event.target.closest('[data-card-href]');if(card&&!event.target.closest('a,button,input,select,textarea,form,dialog'))location.href=card.dataset.cardHref;});
 document.addEventListener('keydown',event=>{const card=event.target.closest('[data-card-href]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();location.href=card.dataset.cardHref;}});
 document.querySelectorAll('[data-history-filters]').forEach(filters=>{
-  const history=filters.closest('.history'),rows=[...history.querySelectorAll('[data-history-action]')],empty=history.querySelector('.history-filter-empty');
-  filters.addEventListener('click',event=>{
-    const button=event.target.closest('[data-history-filter]');if(!button)return;
-    filters.querySelectorAll('[data-history-filter]').forEach(item=>item.classList.toggle('selected',item===button));
-    const filter=button.dataset.historyFilter;
+  const history=filters.closest('.history');
+  const rows=[...history.querySelectorAll('[data-history-action]')];
+  const empty=history.querySelector('.history-filter-empty');
+  const checkboxes=[...filters.querySelectorAll('[data-history-filter-value]')];
+  const dateFrom=filters.querySelector('[data-history-date-from]');
+  const dateTo=filters.querySelector('[data-history-date-to]');
+  const chips=filters.querySelector('[data-history-filter-chips]');
+  const count=filters.querySelector('[data-history-filter-count]');
+  const summary=filters.querySelector('[data-history-filter-summary]');
+  const clear=filters.querySelector('[data-history-clear]');
+  const matchesType=(filter,row)=>{
+    const action=row.dataset.historyAction||'',category=row.dataset.historyCategory||'',kind=row.dataset.historyKind||'';
+    if(filter==='POINTS')return category==='POINTS';
+    if(filter==='BANS')return action.includes('BLOCK');
+    if(filter==='ROLES')return action.includes('ROLE');
+    if(filter==='INCIDENT')return kind==='incident';
+    if(filter==='REVIEW')return kind==='review';
+    if(filter==='EQUIPMENT')return kind==='equipment';
+    if(filter==='SESSIONS')return kind==='session';
+    if(filter==='STORAGE')return kind==='storage';
+    if(filter==='FIRMWARE')return kind==='firmware';
+    if(filter==='ML')return kind==='ml';
+    if(filter==='SYSTEM')return kind==='system';
+    if(filter==='ACCESS')return kind==='access'||action.includes('OPEN')||action.includes('CLOSE');
+    if(filter==='FULL')return action.includes('FULL');
+    if(filter==='SETTINGS')return !action.includes('OPEN')&&!action.includes('CLOSE')&&!action.includes('FULL')&&kind!=='incident';
+    return false;
+  };
+  const formatDate=value=>new Intl.DateTimeFormat('ru-RU').format(new Date(`${value}T00:00:00`));
+  const addChip=(label,removeType,removeValue)=>{
+    const button=document.createElement('button');
+    button.type='button';button.className='history-filter-chip';button.textContent=`${label} ×`;
+    button.dataset[removeType]=removeValue;chips.append(button);
+  };
+  const apply=()=>{
+    const selected=checkboxes.filter(item=>item.checked).map(item=>item.value);
     let visible=0;
-    rows.forEach(row=>{const action=row.dataset.historyAction||'',category=row.dataset.historyCategory||'',kind=row.dataset.historyKind||'',isViolation=action.includes('VIOLATION')||action.includes('CONTAMINATION');const show=filter==='ALL'||(filter==='POINTS'&&category==='POINTS')||(filter==='BANS'&&action.includes('BLOCK'))||(filter==='ROLES'&&action.includes('ROLE'))||(filter==='INCIDENT'&&kind==='incident')||(filter==='VIOLATION'&&kind==='violation')||(filter==='REVIEW'&&kind==='review')||(filter==='EQUIPMENT'&&kind==='equipment')||(filter==='SESSIONS'&&kind==='session')||(filter==='STORAGE'&&kind==='storage')||(filter==='FIRMWARE'&&kind==='firmware')||(filter==='ML'&&kind==='ml')||(filter==='SYSTEM'&&kind==='system')||(filter==='ACCESS'&&(kind==='access'||action.includes('OPEN')||action.includes('CLOSE')))||(filter==='FULL'&&action.includes('FULL'))||(filter==='SETTINGS'&&!action.includes('OPEN')&&!action.includes('CLOSE')&&!action.includes('FULL')&&!action.includes('INCIDENT')&&!isViolation);row.hidden=!show;if(show)visible+=1;});
+    rows.forEach(row=>{
+      const rowDate=row.dataset.historyDate||'';
+      const typeMatches=!selected.length||selected.some(filter=>matchesType(filter,row));
+      const dateMatches=(!dateFrom.value||rowDate>=dateFrom.value)&&(!dateTo.value||rowDate<=dateTo.value);
+      const show=typeMatches&&dateMatches;row.hidden=!show;if(show)visible+=1;
+    });
+    chips.replaceChildren();
+    checkboxes.filter(item=>item.checked).forEach(item=>addChip(item.dataset.historyFilterLabel,'historyRemoveFilter',item.value));
+    if(dateFrom.value)addChip(`С ${formatDate(dateFrom.value)}`,'historyRemoveDate','from');
+    if(dateTo.value)addChip(`По ${formatDate(dateTo.value)}`,'historyRemoveDate','to');
+    const active=selected.length+(dateFrom.value?1:0)+(dateTo.value?1:0);
+    chips.hidden=active===0;count.hidden=active===0;count.textContent=String(active);summary.textContent=active?'Выбрано':'Все события';clear.disabled=active===0;
     if(empty)empty.hidden=visible!==0||rows.length===0;
+  };
+  filters.addEventListener('change',apply);
+  filters.addEventListener('click',event=>{
+    const filterChip=event.target.closest('[data-history-remove-filter]');
+    const dateChip=event.target.closest('[data-history-remove-date]');
+    if(filterChip){const checkbox=checkboxes.find(item=>item.value===filterChip.dataset.historyRemoveFilter);if(checkbox)checkbox.checked=false;apply();}
+    if(dateChip){(dateChip.dataset.historyRemoveDate==='from'?dateFrom:dateTo).value='';apply();}
+    if(event.target.closest('[data-history-clear]')){checkboxes.forEach(item=>item.checked=false);dateFrom.value='';dateTo.value='';apply();}
   });
+  apply();
 });
+document.addEventListener('click',event=>document.querySelectorAll('.history-filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.removeAttribute('open');}));
+document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.history-filter-menu[open]').forEach(menu=>menu.removeAttribute('open'));});
 </script>
 {% block scripts %}{% endblock %}
 </body>

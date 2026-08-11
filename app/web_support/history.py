@@ -2,7 +2,7 @@ TITLES = {
     "REVIEW_APPROVED": "Загрузка одобрена", "REVIEW_REJECTED": "Загрузка отклонена",
     "USER_BLOCKED": "Пользователь заблокирован", "USER_UNBLOCKED": "Пользователь разблокирован",
     "USER_ROLE_CHANGED": "Роль пользователя изменена", "ALL_SESSIONS_REVOKED": "Все сессии завершены",
-    "CONTAMINATION_REPORTED": "Выявлено загрязнение", "VIOLATION_RESOLVED": "Нарушение исправлено",
+    "CONTAMINATION_REPORTED": "Выявлено загрязнение", "VIOLATION_RESOLVED": "Инцидент исправлен",
     "SCORE_ADJUSTED": "Баланс изменён", "INCIDENT_CREATED": "Инцидент создан", "INCIDENT_RESOLVED": "Инцидент исправлен",
     "INCIDENT_UPDATED": "Инцидент изменён", "COMPOSTER_CREATED": "Компостер создан",
     "COMPOSTER_UPDATED": "Настройки компостера изменены", "COMPOSTER_DELETED": "Компостер удалён",
@@ -17,7 +17,7 @@ TITLES = {
     "CLOSE_REQUESTED": "Запрошено закрытие замка", "PROVISIONING_RESUMED": "Настройка компостера продолжена",
     "PROVISIONING_COMPLETED": "Настройка компостера завершена", "TELEMETRY_RECORDED": "Телеметрия записана",
     "PASSWORD_CHANGED": "Пароль изменён", "USER_REGISTERED": "Пользователь зарегистрирован",
-    "USER_AUTO_BLOCKED": "Пользователь заблокирован автоматически", "VIOLATION_CANCELLED": "Нарушение отменено",
+    "USER_AUTO_BLOCKED": "Пользователь заблокирован автоматически", "VIOLATION_CANCELLED": "Инцидент отменён",
 }
 
 
@@ -29,9 +29,7 @@ def history_presentation(action: str) -> tuple[str, str, str]:
         return title, "Доступ", "access"
     if "ROLE" in action:
         return title, "Роль", "role"
-    if "CONTAMINATION" in action or "VIOLATION" in action:
-        return title, "Нарушение", "violation"
-    if "INCIDENT" in action:
+    if "CONTAMINATION" in action or "VIOLATION" in action or "INCIDENT" in action:
         return title, "Инцидент", "incident"
     equipment_actions = {"OPEN_REQUESTED", "CLOSE_REQUESTED", "PROVISIONING_RESUMED", "PROVISIONING_COMPLETED", "TELEMETRY_RECORDED"}
     if any(value in action for value in ("MAINTENANCE", "COMPOSTER", "FULL_", "DEBUG_")) or action in equipment_actions:

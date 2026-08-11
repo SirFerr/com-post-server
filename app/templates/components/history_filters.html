@@ -1,0 +1,23 @@
+{% macro history_filters(options) -%}
+<div class="history-filter-toolbar" data-history-filters>
+  <details class="history-filter-menu">
+    <summary><span data-history-filter-summary>Все события</span><span class="history-filter-count" data-history-filter-count hidden>0</span></summary>
+    <div class="history-filter-dropdown">
+      <fieldset>
+        <legend>Тип события</legend>
+        <div class="history-filter-options">
+          {% for value, label in options %}
+          <label><input type="checkbox" value="{{ value }}" data-history-filter-value data-history-filter-label="{{ label }}"> <span>{{ label }}</span></label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <div class="history-date-filters" aria-label="Период событий">
+        <label class="history-date-field"><span>От</span><input type="date" aria-label="Начальная дата" data-history-date-from></label>
+        <label class="history-date-field"><span>До</span><input type="date" aria-label="Конечная дата" data-history-date-to></label>
+      </div>
+      <button type="button" class="secondary" data-history-clear disabled>Очистить фильтры</button>
+    </div>
+  </details>
+  <div class="history-filter-chips" data-history-filter-chips hidden aria-live="polite"></div>
+</div>
+{%- endmacro %}

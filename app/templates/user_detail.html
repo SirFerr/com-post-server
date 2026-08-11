@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/history_filters.html" import history_filters %}
 {% block title %}{{ user.full_name or user.email }}{% endblock %}
 {% block content %}
 <a class="back" href="/web/users">← Пользователи</a>
@@ -45,23 +46,9 @@
 
 <section class="history user-history">
   <div class="section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Действия, проверки и фотографии</h2></div><span class="status">{{ history|length }}</span></div>
-  <div class="history-filters" data-history-filters>
-    <button type="button" class="history-filter selected" data-history-filter="ALL">Все</button>
-    <button type="button" class="history-filter" data-history-filter="POINTS">Баллы</button>
-    <button type="button" class="history-filter" data-history-filter="BANS">Блокировки</button>
-    <button type="button" class="history-filter" data-history-filter="ROLES">Роли</button>
-    <button type="button" class="history-filter" data-history-filter="INCIDENT">Инциденты</button>
-    <button type="button" class="history-filter" data-history-filter="VIOLATION">Нарушения</button>
-    <button type="button" class="history-filter" data-history-filter="REVIEW">Проверки</button>
-    <button type="button" class="history-filter" data-history-filter="EQUIPMENT">Оборудование</button>
-    <button type="button" class="history-filter" data-history-filter="SESSIONS">Сессии</button>
-    <button type="button" class="history-filter" data-history-filter="STORAGE">Файлы</button>
-    <button type="button" class="history-filter" data-history-filter="FIRMWARE">Прошивка</button>
-    <button type="button" class="history-filter" data-history-filter="ML">ML</button>
-    <button type="button" class="history-filter" data-history-filter="SYSTEM">Система</button>
-  </div>
+  {{ history_filters([('POINTS', 'Баллы'), ('BANS', 'Блокировки'), ('ROLES', 'Роли'), ('INCIDENT', 'Инциденты'), ('REVIEW', 'Проверки'), ('EQUIPMENT', 'Оборудование'), ('SESSIONS', 'Сессии'), ('STORAGE', 'Файлы'), ('FIRMWARE', 'Прошивка'), ('ML', 'ML'), ('SYSTEM', 'Система')]) }}
   {% for item in history %}
-  <article class="clickable-card" data-history-action="{{ item.action }}" data-history-category="{{ item.category or '' }}" data-history-kind="{{ item.tag_class }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
+  <article class="clickable-card" data-history-action="{{ item.action }}" data-history-category="{{ item.category or '' }}" data-history-kind="{{ item.tag_class }}" data-history-date="{{ item.created_at.strftime('%Y-%m-%d') }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>
     <div class="history-heading"><span class="history-tag history-kind-{{ item.tag_class }}">{{ item.tag }}</span><a href="{{ item.detail_url }}"><strong>{{ item.title }}</strong></a><small>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</small></div>
     <div class="history-meta">
       {% if item.score %}<span class="score-change {{ 'positive' if item.score.amount > 0 else 'negative' }}"><strong>{{ '+' if item.score.amount > 0 else '' }}{{ item.score.amount }}</strong> → {{ item.score.balance_after }}</span>{% endif %}

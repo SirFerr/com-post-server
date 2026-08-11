@@ -66,10 +66,11 @@
     <label>Чип / назначение<input name="chip" value="ESP32" required></label>
     <button>Загрузить</button>
   </form>
+  {% if firmware_error %}<div class="empty">{{ firmware_error }}</div>{% endif %}
   <div class="firmware-library">
     {% for firmware in firmwares %}
     <article><div><strong>{{ firmware.name }}</strong><p class="muted">{{ firmware.chip }} · {{ firmware.address }} · {{ (firmware.size / 1024)|round(1) }} КБ</p></div><form method="post" action="/web/flasher/firmwares/{{ firmware.key }}/delete" onsubmit="return confirm('Удалить прошивку {{ firmware.name }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger">Удалить</button></form></article>
-    {% else %}<p class="muted">В хранилище пока нет прошивок.</p>{% endfor %}
+    {% else %}{% if not firmware_error %}<p class="muted">В хранилище пока нет прошивок.</p>{% endif %}{% endfor %}
   </div>
 </section>
 {% endblock %}

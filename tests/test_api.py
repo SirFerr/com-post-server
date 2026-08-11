@@ -3,6 +3,7 @@ import json
 import hashlib
 import hmac
 import jwt
+from botocore.exceptions import EndpointConnectionError
 from sqlalchemy import select
 
 from app import web
@@ -574,6 +575,24 @@ def test_staff_web_login_and_role_sections(client):
     assert flasher.status_code == 200
     assert "зажмите кнопку при подключении ESP" in flasher.text
     assert "/static/vendor/esptool-js.js" in flasher.text
+
+
+def test_flasher_page_survives_unavailable_firmware_storage(client, monkeypatch):
+    login = client.post(
+        "/web/login",
+        data={"email": "admin@example.com", "password": "Password1!"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+
+    def unavailable_storage():
+        raise EndpointConnectionError(endpoint_url="http://firmware-storage:9100")
+
+    monkeypatch.setattr(web, "firmware_rows", unavailable_storage)
+    page = client.get("/web/flasher")
+    assert page.status_code == 200
+    assert "Хранилище прошивок временно недоступно" in page.text
+    assert "В хранилище пока нет прошивок" not in page.text
     assert client.get("/static/vendor/esptool-js.js").status_code == 200
 
 

@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import boto3
 import httpx
+from botocore.exceptions import BotoCoreError
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -1143,7 +1144,17 @@ def analytics_page(request: Request, db: Session = Depends(get_db), actor: User 
 @router.get("/flasher")
 def flasher_page(request: Request, db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     require_role(actor, Role.ADMIN, Role.ENGINEER)
-    return templates.TemplateResponse(request, "flasher.html", page_context(request, actor, db, "flasher", firmwares=firmware_rows()))
+    firmware_error = None
+    try:
+        firmwares = firmware_rows()
+    except BotoCoreError:
+        firmwares = []
+        firmware_error = "Хранилище прошивок временно недоступно. Попробуйте ещё раз позже."
+    return templates.TemplateResponse(
+        request,
+        "flasher.html",
+        page_context(request, actor, db, "flasher", firmwares=firmwares, firmware_error=firmware_error),
+    )
 
 
 @router.post("/flasher/firmwares")

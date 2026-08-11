@@ -5,7 +5,7 @@ os.environ["DATABASE_URL"] = "sqlite://"
 import pytest
 from fastapi.testclient import TestClient
 
-from app import admin
+from app import admin, web
 from app.api import composters
 from app.database import Base, SessionLocal, engine
 from app.main import app
@@ -19,6 +19,7 @@ def database(monkeypatch):
 
     monkeypatch.setattr(admin, "store_photo", fake_store_photo)
     monkeypatch.setattr(composters, "store_photo", fake_store_photo)
+    monkeypatch.setattr(web, "firmware_rows", lambda: [])
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         db.add_all([

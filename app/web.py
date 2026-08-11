@@ -118,9 +118,11 @@ def login_submit(request: Request, email: str = Form(), password: str = Form(), 
     if not user or not verify_password(password, user.password_hash) or user.role == Role.USER:
         return templates.TemplateResponse(request, "login.html", {"error": "Неверные данные или у аккаунта нет доступа к панели"}, status_code=401)
     response = RedirectResponse("/web/dashboard", 303)
-    cookie_secure = get_settings().cookie_secure
-    response.set_cookie("compost_session", create_token(user), httponly=True, secure=cookie_secure, samesite="strict", max_age=3600)
-    response.set_cookie("compost_csrf", generate_csrf(), httponly=True, secure=cookie_secure, samesite="strict", max_age=3600)
+    settings = get_settings()
+    cookie_max_age = settings.web_session_ttl_days * 24 * 60 * 60
+    web_token = create_token(user, ttl_minutes=settings.web_session_ttl_days * 24 * 60)
+    response.set_cookie("compost_session", web_token, httponly=True, secure=settings.cookie_secure, samesite="strict", max_age=cookie_max_age)
+    response.set_cookie("compost_csrf", generate_csrf(), httponly=True, secure=settings.cookie_secure, samesite="strict", max_age=cookie_max_age)
     return response
 
 

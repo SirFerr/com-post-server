@@ -192,6 +192,26 @@ def test_expired_web_session_redirects_to_login(client):
     assert response.headers["location"].startswith("/web/login")
 
 
+def test_web_login_sets_persistent_cookie_for_configured_lifetime(client):
+    response = client.post(
+        "/web/login",
+        data={"email": "admin@example.com", "password": "Password1!"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    expected_max_age = get_settings().web_session_ttl_days * 24 * 60 * 60
+    cookie_headers = response.headers.get_list("set-cookie")
+    session_cookie = next(value for value in cookie_headers if value.startswith("compost_session="))
+    csrf_cookie = next(value for value in cookie_headers if value.startswith("compost_csrf="))
+    for cookie in (session_cookie, csrf_cookie):
+        assert f"Max-Age={expected_max_age}" in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=strict" in cookie
+
+    payload = jwt.decode(response.cookies["compost_session"], get_settings().jwt_secret, algorithms=["HS256"])
+    assert payload["exp"] - payload["iat"] == expected_max_age
+
+
 def test_register_profile_and_empty_history(client):
     registered = client.post("/auth/register", json={"email": "New@Example.com", "password": "Password2!", "full_name": "Новый пользователь"})
     assert registered.status_code == 201

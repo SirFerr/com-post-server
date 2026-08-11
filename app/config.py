@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "local-development-secret-change-me"
     jwt_ttl_minutes: int = 1_440
     refresh_ttl_days: int = 30
+    web_session_ttl_days: int = 30
     command_ttl_seconds: int = 60
     s3_endpoint: str = "http://minio:9000"
     s3_public_endpoint: str = "http://192.168.1.212:9000"

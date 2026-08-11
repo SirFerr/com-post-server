@@ -29,7 +29,7 @@ API: `http://localhost:8000`, веб-панель персонала: `/web`, Sw
 
 Без Docker: `python -m venv .venv`, установить `requirements.txt`, затем `python -m app.seed` и `uvicorn app.main:app --reload`. Тесты: `pytest -q`.
 
-Переменные: `DATABASE_URL`, `JWT_SECRET`, `JWT_TTL_MINUTES`, `COMMAND_TTL_SECONDS`, `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `ML_SERVICE_URL`.
+Переменные: `DATABASE_URL`, `JWT_SECRET`, `JWT_TTL_MINUTES`, `WEB_SESSION_TTL_DAYS`, `COMMAND_TTL_SECONDS`, `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `ML_SERVICE_URL`. Веб-авторизация хранится в защищённой `HttpOnly` cookie в течение 30 дней по умолчанию; срок настраивается через `WEB_SESSION_TTL_DAYS`.
 
 ML-контейнер загружает фото из MinIO и применяет прозрачную эвристику цветовых областей (`LIKELY_VALID`, `LIKELY_INVALID`, `NEEDS_MANUAL_REVIEW`). Решение не заменяет модератора и подготовлено так, чтобы позже заменить реализацию `/analyze` обученной моделью без изменений Android и бизнес-процесса.
 

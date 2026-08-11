@@ -34,15 +34,16 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_token(user: User, session_id: str | None = None) -> str:
+def create_token(user: User, session_id: str | None = None, *, ttl_minutes: int | None = None) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
+    token_ttl_minutes = settings.jwt_ttl_minutes if ttl_minutes is None else ttl_minutes
     payload = {
         "sub": user.id,
         "role": user.role.value,
         "ver": user.token_version,
         "iat": now,
-        "exp": now + timedelta(minutes=settings.jwt_ttl_minutes),
+        "exp": now + timedelta(minutes=token_ttl_minutes),
     }
     if session_id:
         payload["sid"] = session_id

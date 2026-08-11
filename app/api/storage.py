@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import boto3
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -39,17 +39,24 @@ def object_annotations(db: Session, object_key: str) -> list[dict]:
 
 @router.get("")
 def storage_objects(
+    response: Response,
     q: str = Query("", max_length=256),
+    limit: int = Query(100, ge=1, le=200),
+    cursor: str | None = Query(None, max_length=1024),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR)),
 ):
     settings = get_settings()
     try:
-        objects = storage_client().list_objects_v2(
+        page = storage_client().list_objects_v2(
             Bucket=settings.s3_bucket,
             Prefix=q.strip(),
-            MaxKeys=200,
-        ).get("Contents", [])
+            MaxKeys=limit,
+            **({"ContinuationToken": cursor} if cursor else {}),
+        )
+        objects = page.get("Contents", [])
+        if page.get("NextContinuationToken"):
+            response.headers["X-Next-Cursor"] = page["NextContinuationToken"]
     except Exception as exc:
         raise HTTPException(503, "S3 storage is unavailable") from exc
     result = [

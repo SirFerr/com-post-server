@@ -1,5 +1,7 @@
 import io
 import json
+import hashlib
+import hmac
 import jwt
 from sqlalchemy import select
 
@@ -8,12 +10,57 @@ from app.api import storage as storage_api
 from app.config import get_settings
 from app.database import SessionLocal
 from app.ml_dataset import build_dataset_manifest
-from app.models import AccessSession, AuditLog, DatasetVersion, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
+from app.models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MLDatasetSample, Review, ReviewStatus, SessionStatus, StorageObjectAnnotation, User, UserScore
 from tests.conftest import token
 
 
 def auth(value):
     return {"Authorization": f"Bearer {value}"}
+
+
+def device_proof(command, status="PROXIMITY_CONFIRMED", state="CLOSED"):
+    payload = {
+        "commandId": command["commandId"],
+        "deviceId": "device-1",
+        "state": state,
+        "status": status,
+        "v": 1,
+    }
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return {
+        "command_id": command["commandId"],
+        "status": status,
+        "state": state,
+        "device_id": "device-1",
+        "signature": hmac.new(b"test-secret", canonical, hashlib.sha256).hexdigest(),
+    }
+
+
+def access_payload(client, headers, latitude=55.75, longitude=37.61):
+    challenge = client.post("/composters/composter-1/proximity-challenge", headers=headers)
+    assert challenge.status_code == 200
+    body = challenge.json()
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "challenge_id": body["challenge_id"],
+        "proof": device_proof(body["command"]),
+    }
+
+
+def incident_proof(client, headers):
+    challenge = client.post("/composters/composter-1/proximity-challenge", headers=headers)
+    assert challenge.status_code == 200
+    body = challenge.json()
+    proof = device_proof(body["command"])
+    return {
+        "challenge_id": body["challenge_id"],
+        "proof_command_id": proof["command_id"],
+        "proof_status": proof["status"],
+        "proof_state": proof["state"],
+        "proof_device_id": proof["device_id"],
+        "proof_signature": proof["signature"],
+    }
 
 
 def test_web_ml_manual_upload_adds_trainable_sample(client, monkeypatch):
@@ -166,6 +213,7 @@ def test_account_password_change_and_delete_require_current_password(client):
     headers = auth(token(client))
     assert client.post("/profile/change-password", json={"current_password": "wrong-pass", "new_password": "Changed123"}, headers=headers).status_code == 403
     assert client.post("/profile/change-password", json={"current_password": "Password1!", "new_password": "Changed123"}, headers=headers).status_code == 200
+    assert client.get("/profile", headers=headers).status_code == 401
     changed_headers = auth(client.post("/auth/login", json={"email": "user@example.com", "password": "Changed123"}).json()["access_token"])
     assert client.post("/profile/delete", json={"current_password": "wrong-pass"}, headers=changed_headers).status_code == 403
     assert client.post("/profile/delete", json={"current_password": "Changed123"}, headers=changed_headers).status_code == 200
@@ -196,14 +244,57 @@ def test_staff_can_confirm_full_state_without_password(client):
 
 def test_access_rejects_bad_location_and_replay(client):
     headers = auth(token(client))
-    far = client.post("/composters/composter-1/access", json={"latitude": 1, "longitude": 1}, headers=headers)
+    far = client.post("/composters/composter-1/access", json=access_payload(client, headers, 1, 1), headers=headers)
     assert far.status_code == 403
-    granted = client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=headers)
+    granted = client.post("/composters/composter-1/access", json=access_payload(client, headers), headers=headers)
     assert granted.status_code == 200
     body = granted.json()
-    ack = {"command_id": body["command"]["commandId"], "status": "SUCCESS"}
+    ack = device_proof(body["command"], "SUCCESS", "OPEN")
     assert client.post(f"/sessions/{body['session_id']}/ack", json=ack, headers=headers).status_code == 200
     assert client.post(f"/sessions/{body['session_id']}/ack", json=ack, headers=headers).status_code == 409
+
+
+def test_proximity_proof_is_single_use_and_unsigned_ack_is_rejected(client):
+    headers = auth(token(client))
+    payload = access_payload(client, headers)
+    granted = client.post("/composters/composter-1/access", json=payload, headers=headers)
+    assert granted.status_code == 200
+    body = granted.json()
+    assert client.post(
+        f"/sessions/{body['session_id']}/ack",
+        json={"command_id": body["command"]["commandId"], "status": "SUCCESS", "state": "OPEN", "device_id": "device-1"},
+        headers=headers,
+    ).status_code == 403
+    assert client.post("/composters/composter-1/access", json=payload, headers=headers).status_code == 403
+
+
+def test_request_ids_and_metrics_are_exposed_internally(client):
+    response = client.get("/health", headers={"X-Request-ID": "audit-test"})
+    assert response.headers["X-Request-ID"] == "audit-test"
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert "compost_http_requests_total" in metrics.text
+
+
+def test_ready_health_checks_dependencies(client, monkeypatch):
+    from app import main
+
+    class Storage:
+        def head_bucket(self, **_):
+            return {}
+
+    class HealthyResponse:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(main.boto3, "client", lambda *_, **__: Storage())
+    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *_, **__: HealthyResponse())
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
 
 
 def test_active_session_can_retry_close(client):
@@ -329,7 +420,8 @@ def test_blocked_user_can_manage_account_but_cannot_use_composters(client):
     assert client.get("/profile/deposits", headers=headers).status_code == 200
     assert client.get("/composters/resolve-qr/composter-1", headers=headers).status_code == 403
     assert client.post("/composters/composter-1/report-full", headers=headers).status_code == 403
-    assert client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=headers).status_code == 403
+    invalid_access = {"latitude": 55.75, "longitude": 37.61, "challenge_id": "invalid", "proof": device_proof({"commandId": "invalid"})}
+    assert client.post("/composters/composter-1/access", json=invalid_access, headers=headers).status_code == 403
 
 
 def test_admin_dashboard_and_user_blocking(client):
@@ -351,7 +443,7 @@ def test_staff_debug_command_is_signed_and_can_be_acknowledged(client):
     body = response.json()
     assert body["command"]["action"] == "OPEN"
     assert body["command"]["signature"]
-    ack = client.post(f"/sessions/{body['session_id']}/ack", json={"command_id": body["command"]["commandId"], "status": "SUCCESS"}, headers=headers)
+    ack = client.post(f"/sessions/{body['session_id']}/ack", json=device_proof(body["command"], "SUCCESS", "OPEN"), headers=headers)
     assert ack.status_code == 200
     with SessionLocal() as db:
         assert db.get(AccessSession, body["session_id"]).status == SessionStatus.CLOSED
@@ -363,7 +455,7 @@ def test_unfinished_staff_diagnostic_does_not_block_regular_user(client):
     assert diagnostic.status_code == 200
 
     user = auth(token(client))
-    granted = client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user)
+    granted = client.post("/composters/composter-1/access", json=access_payload(client, user), headers=user)
     assert granted.status_code == 200
     body = granted.json()
     assert client.post(
@@ -390,7 +482,7 @@ def test_expired_unacknowledged_user_command_is_cleaned_before_access(client):
         db.commit()
 
     user = auth(token(client))
-    granted = client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user)
+    granted = client.post("/composters/composter-1/access", json=access_payload(client, user), headers=user)
     assert granted.status_code == 200
     with SessionLocal() as db:
         assert db.get(AccessSession, "stale-session").status == SessionStatus.FAILED
@@ -401,7 +493,7 @@ def test_staff_web_login_and_role_sections(client):
     assert login.status_code == 303
     page = client.get("/web/dashboard")
     assert page.status_code == 200
-    assert "/static/admin.css?v=28" in page.text
+    assert "/static/admin.css?v=29" in page.text
     assert ".history [hidden]{display:none!important}" in client.get("/static/admin.css").text
     assert "Состояние системы" in page.text
     assert "Оборудование" in page.text
@@ -584,10 +676,97 @@ def test_android_equipment_history_contains_access_and_full_report(client):
     user_headers = auth(token(client))
     admin_headers = auth(token(client, "admin@example.com"))
     assert client.post("/composters/composter-1/report-full", headers=user_headers).status_code == 200
-    assert client.post("/composters/composter-1/access", json={"latitude": 55.75, "longitude": 37.61}, headers=user_headers).status_code == 200
+    assert client.post("/composters/composter-1/access", json=access_payload(client, user_headers), headers=user_headers).status_code == 200
     history = client.get("/admin/composters/composter-1/history", headers=admin_headers)
     assert history.status_code == 200
     assert {row["action"] for row in history.json()} >= {"FULL_REPORTED", "OPEN_REQUESTED"}
+
+
+def test_web_full_state_is_backed_by_single_overflow_incident(client):
+    assert client.post(
+        "/web/login",
+        data={"email": "admin@example.com", "password": "Password1!"},
+        follow_redirects=False,
+    ).status_code == 303
+
+    detail = client.get("/web/equipment/composter-1")
+    assert detail.status_code == 200
+    assert 'href="/web/map?focus=composter-1"' in detail.text
+    assert "Создать инцидент" in detail.text
+    assert 'class="panel fullness-panel"' in detail.text
+    assert 'class="composter-quick-actions"' in detail.text
+    assert "Статус связан с инцидентом" not in detail.text
+
+    csrf_token = client.cookies.get("compost_csrf")
+    for _ in range(2):
+        response = client.post(
+            "/web/equipment/composter-1/full-state",
+            data={"needs_emptying": "true", "csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    with SessionLocal() as db:
+        incidents = list(db.scalars(select(Incident).where(
+            Incident.composter_id == "composter-1",
+            Incident.kind == "OVERFLOW",
+        )).all())
+        assert len(incidents) == 1
+        assert incidents[0].status == "OPEN"
+        assert incidents[0].photo_key is None
+        assert db.get(Composter, "composter-1").needs_emptying is True
+
+    response = client.post(
+        "/web/equipment/composter-1/full-state",
+        data={"needs_emptying": "false", "csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        incident = db.scalars(select(Incident).where(Incident.kind == "OVERFLOW")).one()
+        assert incident.status == "RESOLVED"
+        assert incident.resolved_by == "admin-1"
+        assert db.get(Composter, "composter-1").needs_emptying is False
+
+
+def test_resolved_incident_appears_in_composter_and_reporter_history(client):
+    with SessionLocal() as db:
+        db.add(Incident(
+            id="reported-incident",
+            composter_id="composter-1",
+            kind="LOCK",
+            severity="MEDIUM",
+            title="Проблема с замком",
+            description="Не закрывается",
+            created_by="user-1",
+        ))
+        db.commit()
+
+    assert client.post(
+        "/web/login",
+        data={"email": "admin@example.com", "password": "Password1!"},
+        follow_redirects=False,
+    ).status_code == 303
+    response = client.post(
+        "/web/violations/reported-incident/resolve",
+        data={"csrf_token": client.cookies.get("compost_csrf")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    composter_page = client.get("/web/equipment/composter-1")
+    reporter_page = client.get("/web/users/user-1")
+    assert "Инцидент исправлен" in composter_page.text
+    assert "Инцидент исправлен" in reporter_page.text
+    with SessionLocal() as db:
+        rows = list(db.scalars(select(AuditLog).where(
+            AuditLog.action == "INCIDENT_RESOLVED",
+        )).all())
+        assert {(row.entity, row.entity_id) for row in rows} >= {
+            ("incident", "reported-incident"),
+            ("composter", "composter-1"),
+            ("user", "user-1"),
+        }
 
 
 def test_refresh_tokens_rotate_and_sessions_can_be_revoked(client):
@@ -602,6 +781,7 @@ def test_refresh_tokens_rotate_and_sessions_can_be_revoked(client):
     sessions = client.get("/profile/sessions", headers=headers).json()
     assert any(row["device_name"] == "Pixel test" for row in sessions)
     assert client.delete(f"/profile/sessions/{sessions[0]['id']}", headers=headers).status_code == 200
+    assert client.get("/profile", headers=headers).status_code == 401
 
 
 def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
@@ -635,13 +815,13 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
     ).status_code == 422
     assert client.post(
         "/composters/composter-1/incident-report",
-        data={"kind": "LOCK", "comment": "Далеко", "latitude": 55.76, "longitude": 37.61},
+        data={"kind": "LOCK", "comment": "Далеко", "latitude": 55.76, "longitude": 37.61, **incident_proof(client, user)},
         files={"file": ("far-report.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
         headers=user,
     ).status_code == 403
     user_report = client.post(
         "/composters/composter-1/incident-report",
-        data={"kind": "LOCK", "comment": "Повреждена крышка", "latitude": 55.75, "longitude": 37.61},
+        data={"kind": "LOCK", "comment": "Повреждена крышка", "latitude": 55.75, "longitude": 37.61, **incident_proof(client, user)},
         files={"file": ("user-report.jpg", io.BytesIO(b"\xff\xd8\xff\xd9"), "image/jpeg")},
         headers=user,
     )

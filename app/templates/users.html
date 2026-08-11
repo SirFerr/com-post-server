@@ -7,4 +7,5 @@
 <section class="card-list">
 {% for item in users %}<a class="entity-card user-card" href="/web/users/{{ item.id }}"><div><h2>{{ item.full_name or item.email }}</h2><p>{{ item.email }}{% if item.role.value != 'USER' %} · {{ item.role.value }}{% endif %}</p></div><span class="status {{ 'off' if item.is_blocked else 'ok' }}">{{ 'Заблокирован' if item.is_blocked else 'Активен' }}</span>{% if item.ban_reason %}<small>{{ item.ban_reason }}</small>{% endif %}</a>{% else %}<div class="empty">Пользователи не найдены.</div>{% endfor %}
 </section>
+{% if page > 1 or has_next %}<nav class="filters" aria-label="Страницы">{% if page > 1 %}<a href="?status={{ status }}&q={{ q }}&page={{ page - 1 }}">Назад</a>{% endif %}<span>Страница {{ page }}</span>{% if has_next %}<a href="?status={{ status }}&q={{ q }}&page={{ page + 1 }}">Дальше</a>{% endif %}</nav>{% endif %}
 {% endblock %}

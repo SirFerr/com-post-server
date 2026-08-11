@@ -1,4 +1,5 @@
 import json
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,7 +18,7 @@ router = APIRouter()
 
 @router.post("/auth/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email.lower()))
+    user = db.scalar(select(User).where(User.email == data.email.lower(), User.deleted_at.is_(None)))
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
     access_token, refresh_token = create_auth_session(user, db, data.device_name)
@@ -27,7 +28,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/auth/register", status_code=201)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     email = data.email.lower()
-    if db.scalar(select(User).where(User.email == email)):
+    if db.scalar(select(User).where(User.email == email, User.deleted_at.is_(None))):
         raise HTTPException(409, "Email is already registered")
     user = User(email=email, password_hash=hash_password(data.password), full_name=data.full_name.strip(), role=Role.USER)
     db.add(user)
@@ -81,6 +82,12 @@ def change_password(data: ChangePasswordRequest, db: Session = Depends(get_db), 
     if verify_password(data.new_password, user.password_hash):
         raise HTTPException(409, "New password must be different")
     user.password_hash = hash_password(data.new_password)
+    user.token_version += 1
+    db.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
     audit(db, user, "user", user.id, "PASSWORD_CHANGED")
     db.commit()
     return {"status": "changed"}
@@ -94,19 +101,22 @@ def delete_account(data: PasswordConfirmation, db: Session = Depends(get_db), us
         admins = db.scalar(select(func.count(User.id)).where(User.role == Role.ADMIN)) or 0
         if admins <= 1:
             raise HTTPException(409, "Last administrator cannot be deleted")
-    session_ids = list(db.scalars(select(AccessSession.id).where(AccessSession.user_id == user.id)).all())
-    review_ids = list(db.scalars(select(Review.id).where(Review.session_id.in_(session_ids))).all()) if session_ids else []
-    if review_ids:
-        db.execute(delete(Violation).where(Violation.review_id.in_(review_ids)))
-        db.execute(delete(Review).where(Review.id.in_(review_ids)))
-    db.execute(delete(Violation).where(Violation.user_id == user.id))
-    if session_ids:
-        db.execute(delete(DeviceCommand).where(DeviceCommand.session_id.in_(session_ids)))
-        db.execute(delete(AccessSession).where(AccessSession.id.in_(session_ids)))
+    # Preserve immutable moderation/training history and its foreign keys, but
+    # immediately remove credentials and personally identifying profile data.
+    now = datetime.now(timezone.utc)
+    db.execute(update(AuthSession).where(AuthSession.user_id == user.id).values(revoked_at=now))
     db.execute(update(Review).where(Review.reviewed_by == user.id).values(reviewed_by=None))
     db.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
     db.execute(delete(UserScore).where(UserScore.user_id == user.id))
-    db.delete(user)
+    user.email = f"deleted-{user.id}-{secrets.token_hex(4)}@invalid.local"
+    user.full_name = "Deleted user"
+    user.password_hash = hash_password(secrets.token_urlsafe(48))
+    user.warning_message = None
+    user.ban_reason = None
+    user.ban_until = None
+    user.is_blocked = True
+    user.token_version += 1
+    user.deleted_at = now
     db.commit()
     return {"status": "deleted"}
 

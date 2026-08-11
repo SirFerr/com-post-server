@@ -7,7 +7,7 @@ from .domain.audit import audit
 from .domain.geo import distance_m
 from .domain.ml import request_ml_review
 from .domain.moderation import apply_violation, reward_review
-from .models import Incident, User
+from .models import Composter, Incident, User
 from .domain.storage import photo_url, store_photo
 
 
@@ -46,6 +46,10 @@ def create_moderation_incident(db, actor: User, composter_id: str, kind: str | N
     )
     db.add(incident)
     db.flush()
+    if incident.kind == "OVERFLOW":
+        composter = db.get(Composter, composter_id)
+        if composter:
+            composter.needs_emptying = True
     audit(db, actor, "incident", incident.id, "INCIDENT_CREATED_FROM_REVIEW", {"review_id": review_id, "composter_id": composter_id})
     return incident
 

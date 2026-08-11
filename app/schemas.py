@@ -34,14 +34,27 @@ class RegisterRequest(BaseModel):
         return cleaned
 
 
+class DeviceProof(BaseModel):
+    command_id: str
+    status: str
+    state: str
+    device_id: str
+    signature: str
+
+
 class AccessRequest(BaseModel):
     latitude: float
     longitude: float
+    challenge_id: str
+    proof: DeviceProof
 
 
 class CommandAck(BaseModel):
     command_id: str
     status: str
+    state: str | None = None
+    device_id: str | None = None
+    signature: str | None = None
 
 
 class ModerateRequest(BaseModel):

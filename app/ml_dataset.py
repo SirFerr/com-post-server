@@ -162,9 +162,23 @@ def training_readiness(manifest: dict) -> dict:
         },
         "sources": {"actual": summary.get("sources", 0), "minimum": 2, "recommended": 3},
     }
+    trainable = privacy_safe and all(item["actual"] >= item["minimum"] for item in checks.values())
+    test_samples = summary.get("splits", {}).get("test", 0)
+    test_clean = sum(sample.get("split") == "test" and sample.get("label") == "clean" for sample in manifest.get("samples", []))
+    test_contamination = sum(sample.get("split") == "test" and sample.get("label") == "contamination" for sample in manifest.get("samples", []))
+    deployable = (
+        trainable
+        and checks["sources"]["actual"] >= 3
+        and test_clean >= 20
+        and test_contamination >= 20
+    )
     return {
         "privacy_safe": privacy_safe,
-        "trainable": privacy_safe and all(item["actual"] >= item["minimum"] for item in checks.values()),
+        "trainable": trainable,
+        "deployable": deployable,
+        "test_samples": test_samples,
+        "test_clean": test_clean,
+        "test_contamination": test_contamination,
         "ready": privacy_safe and all(item["actual"] >= item["recommended"] for item in checks.values()),
         "checks": checks,
     }

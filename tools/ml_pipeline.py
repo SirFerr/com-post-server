@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import shutil
 from pathlib import Path
@@ -87,6 +88,16 @@ def export_yolo(manifest_path: Path, output: Path) -> dict:
     return metadata
 
 
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float | None, float | None]:
+    if total <= 0:
+        return None, None
+    value = successes / total
+    denominator = 1 + z * z / total
+    center = (value + z * z / (2 * total)) / denominator
+    margin = z * math.sqrt((value * (1 - value) + z * z / (4 * total)) / total) / denominator
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
 def evaluate_image_level(model, dataset: Path, split: str, confidence: float) -> dict:
     image_dir = dataset / "images" / split
     label_dir = dataset / "labels" / split
@@ -102,12 +113,16 @@ def evaluate_image_level(model, dataset: Path, split: str, confidence: float) ->
         else:
             clean += 1
             false_positives += int(detected)
+    recall_interval = wilson_interval(detected_contamination, contaminated)
+    false_positive_interval = wilson_interval(false_positives, clean)
     return {
         "split": split,
         "contaminated_images": contaminated,
         "clean_images": clean,
         "contamination_image_recall": detected_contamination / contaminated if contaminated else None,
         "clean_image_false_positive_rate": false_positives / clean if clean else None,
+        "contamination_recall_95ci": list(recall_interval),
+        "clean_false_positive_rate_95ci": list(false_positive_interval),
     }
 
 
@@ -132,23 +147,31 @@ def train_candidate(
     )
     best_path = Path(run.save_dir) / "weights" / "best.pt"
     best = YOLO(str(best_path))
-    split = "test" if any((dataset / "images" / "test").glob("*.jpg")) else "val"
+    has_test_split = any((dataset / "images" / "test").glob("*.jpg"))
+    split = "test" if has_test_split else "val"
     image_metrics = evaluate_image_level(best, dataset, split, confidence)
     recall = image_metrics["contamination_image_recall"]
     false_positive_rate = image_metrics["clean_image_false_positive_rate"]
-    gate_passed = (
+    recall_lower = image_metrics["contamination_recall_95ci"][0]
+    false_positive_upper = image_metrics["clean_false_positive_rate_95ci"][1]
+    metrics_passed = (
         recall is not None
         and false_positive_rate is not None
         and recall >= 0.90
         and false_positive_rate <= 0.10
     )
+    enough_test_data = image_metrics["contaminated_images"] >= 20 and image_metrics["clean_images"] >= 20
+    confidence_passed = recall_lower is not None and recall_lower >= 0.80 and false_positive_upper is not None and false_positive_upper <= 0.20
+    production_eligible = has_test_split and metrics_passed and enough_test_data and confidence_passed
     onnx_path = Path(best.export(format="onnx", imgsz=image_size, dynamic=False, simplify=True, nms=True))
     candidate = output / "candidate"
     candidate.mkdir(parents=True, exist_ok=True)
     shutil.copy2(best_path, candidate / "model.pt")
     shutil.copy2(onnx_path, candidate / "model.onnx")
     report = {
-        "status": "PASSED" if gate_passed else "REJECTED",
+        "status": "PASSED" if metrics_passed else "REJECTED",
+        "production_eligible": production_eligible,
+        "evaluation_split": split,
         "initial_weights": model_name,
         "epochs": epochs,
         "image_size": image_size,
@@ -156,9 +179,16 @@ def train_candidate(
         "quality_gate": {
             "minimum_contamination_image_recall": 0.90,
             "maximum_clean_image_false_positive_rate": 0.10,
+            "minimum_test_images_per_class": 20,
+            "minimum_recall_95ci_lower_bound": 0.80,
+            "maximum_false_positive_95ci_upper_bound": 0.20,
         },
         "image_metrics": image_metrics,
-        "note": "A PASSED candidate still requires a human review before production activation.",
+        "note": (
+            "Candidate passed an independent test split and still requires human review."
+            if production_eligible
+            else "Experimental result only: production activation requires an independent test split."
+        ),
     }
     (candidate / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

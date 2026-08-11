@@ -1,9 +1,30 @@
 {$DOMAIN} {
-    encode zstd gzip
-    reverse_proxy api:8000
+	encode zstd gzip
+	request_body {
+		max_size 16MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), geolocation=(self)"
+		-Server
+	}
+	@internalMetrics path /metrics
+	respond @internalMetrics 404
+	reverse_proxy api:8000
 }
 
 {$S3_DOMAIN} {
-    encode zstd gzip
-    reverse_proxy minio:9000
+	encode zstd gzip
+	request_body {
+		max_size 16MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	reverse_proxy minio:9000
 }

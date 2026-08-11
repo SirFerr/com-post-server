@@ -2,11 +2,12 @@ import json
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
 from .ml_dataset import freeze_dataset_version
 from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, UserScore, Violation
 from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, IncidentCreate, IncidentUpdate, MaintenanceCreate, MaintenanceModeRequest, PasswordConfirmation, ScoreAdjustment, TelemetryRequest, UserAdminUpdate
@@ -50,8 +51,8 @@ def history_media(db: Session, row: AuditLog) -> dict:
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
     return {
-        "users": db.scalar(select(func.count(User.id))) or 0,
-        "blocked_users": db.scalar(select(func.count(User.id)).where(User.is_blocked.is_(True))) or 0,
+        "users": db.scalar(select(func.count(User.id)).where(User.deleted_at.is_(None))) or 0,
+        "blocked_users": db.scalar(select(func.count(User.id)).where(User.is_blocked.is_(True), User.deleted_at.is_(None))) or 0,
         "composters": db.scalar(select(func.count(Composter.id))) or 0,
         "available_composters": db.scalar(select(func.count(Composter.id)).where(Composter.is_available.is_(True))) or 0,
         "sessions": db.scalar(select(func.count(AccessSession.id))) or 0,
@@ -63,16 +64,17 @@ def dashboard(db: Session = Depends(get_db), _: User = Depends(require_roles(Rol
 
 
 @router.get("/users")
-def users(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
-    return [{"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "is_blocked": u.is_blocked, "ban_reason": u.ban_reason, "created_at": u.created_at} for u in db.scalars(select(User).order_by(User.created_at.desc())).all()]
+def users(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
+    query = select(User).where(User.deleted_at.is_(None)).order_by(User.created_at.desc()).offset(offset).limit(limit)
+    return [{"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "is_blocked": u.is_blocked, "ban_reason": u.ban_reason, "created_at": u.created_at} for u in db.scalars(query).all()]
 
 
 @router.get("/violations")
-def violations(active_only: bool = True, db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
+def violations(active_only: bool = True, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER, Role.MODERATOR))):
     query = select(Violation).order_by(Violation.created_at.desc())
     if active_only:
         query = query.where(Violation.is_active.is_(True))
-    rows = list(db.scalars(query).all())
+    rows = list(db.scalars(query.offset(offset).limit(limit)).all())
     actor_ids = {value for row in rows for value in (row.user_id, row.created_by, row.resolved_by) if value}
     users = {user.id: user for user in db.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
     reviews = {review.id: review for review in db.scalars(select(Review).where(Review.id.in_({row.review_id for row in rows}))).all()} if rows else {}
@@ -135,7 +137,10 @@ def resolve_violation(violation_id: str, db: Session = Depends(get_db), actor: U
         incident.status = "RESOLVED"
         incident.resolved_by = actor.id
         incident.resolved_at = datetime.now(timezone.utc)
-        audit(db, actor, "incident", incident.id, "VIOLATION_RESOLVED", {"composter_id": incident.composter_id})
+        db.flush()
+        if incident.kind == "OVERFLOW":
+            sync_full_state_after_incident_change(db, incident.composter_id)
+        audit_incident_resolved(db, actor, incident, "ADMIN_API")
         db.commit()
         return {"status": "resolved"}
     violation.is_active = False
@@ -213,6 +218,7 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
     if user.role != previous_role:
         audit(db, actor, "user", user.id, "USER_ROLE_CHANGED", {"from": previous_role.value, "to": user.role.value})
     if user.is_blocked != previous_blocked:
+        user.token_version += 1
         audit(db, actor, "user", user.id, "USER_BLOCKED" if user.is_blocked else "USER_UNBLOCKED", {"reason": user.ban_reason})
     db.commit()
     return {"id": user.id, "role": user.role, "is_blocked": user.is_blocked, "ban_reason": user.ban_reason, "ban_until": user.ban_until, "warning_message": user.warning_message}
@@ -244,30 +250,37 @@ def score_transactions(user_id: str, db: Session = Depends(get_db), _: User = De
 
 @router.post("/users/{user_id}/revoke-sessions")
 def revoke_user_sessions(user_id: str, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     rows = db.scalars(select(AuthSession).where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))).all()
     now = datetime.now(timezone.utc)
     for row in rows:
         row.revoked_at = now
+    user.token_version += 1
     audit(db, actor, "user", user_id, "ALL_SESSIONS_REVOKED", {"count": len(rows)})
     db.commit()
     return {"revoked": len(rows)}
 
 
 @router.get("/incidents")
-def incidents(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
-    rows = db.scalars(select(Incident).order_by(Incident.created_at.desc()).limit(500)).all()
+def incidents(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
+    rows = db.scalars(select(Incident).order_by(Incident.created_at.desc()).offset(offset).limit(limit)).all()
     return [{"id": row.id, "composter_id": row.composter_id, "kind": row.kind, "severity": row.severity, "status": row.status, "title": row.title, "description": row.description, "photo_url": photo_url(row.photo_key) if row.photo_key else None, "assigned_to": row.assigned_to, "due_at": row.due_at, "created_at": row.created_at} for row in rows]
 
 
 @router.post("/incidents")
 def create_incident(data: IncidentCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.ENGINEER))):
-    if data.composter_id and not db.get(Composter, data.composter_id):
+    composter = db.get(Composter, data.composter_id) if data.composter_id else None
+    if data.composter_id and not composter:
         raise HTTPException(404, "Composter not found")
     values = data.model_dump(exclude={"due_at"})
     values["title"] = data.title.strip() or incident_title(data.kind)
     row = Incident(**values, due_at=datetime.fromisoformat(data.due_at) if data.due_at else None, created_by=actor.id)
     db.add(row)
     db.flush()
+    if row.kind == "OVERFLOW" and composter:
+        composter.needs_emptying = True
     audit(db, actor, "incident", row.id, "INCIDENT_CREATED", {"severity": row.severity, "kind": row.kind})
     db.commit()
     return {"id": row.id, "status": row.status}
@@ -311,6 +324,8 @@ def report_incident(
     )
     db.add(row)
     db.flush()
+    if row.kind == "OVERFLOW" and composter:
+        composter.needs_emptying = True
     audit(db, actor, "incident", row.id, "INCIDENT_CREATED", {
         "composter_id": row.composter_id,
         "kind": row.kind,
@@ -449,8 +464,9 @@ def composter_history(composter_id: str, db: Session = Depends(get_db), _: User 
 
 
 @router.get("/composters")
-def composters(db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
-    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "radius_m": c.radius_m, "is_available": c.is_available, "needs_emptying": c.needs_emptying, "battery_level": c.battery_level, "lock_state": c.lock_state, "last_seen_at": c.last_seen_at, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(select(Composter)).all()]
+def composters(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db), _: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
+    query = select(Composter).order_by(Composter.name).offset(offset).limit(limit)
+    return [{"id": c.id, "name": c.name, "device_id": c.device_id, "latitude": c.latitude, "longitude": c.longitude, "radius_m": c.radius_m, "is_available": c.is_available, "needs_emptying": c.needs_emptying, "battery_level": c.battery_level, "lock_state": c.lock_state, "last_seen_at": c.last_seen_at, "qr_payload": f"compost://composter/{c.id}"} for c in db.scalars(query).all()]
 
 
 @router.post("/composters")
@@ -502,22 +518,20 @@ def activate_provisioned(composter_id: str, db: Session = Depends(get_db), actor
 @router.post("/composters/{composter_id}/clear-full")
 def clear_full_report(composter_id: str, data: PasswordConfirmation, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN))):
     confirm_password(actor, data.current_password)
-    composter = db.get(Composter, composter_id)
+    composter = db.scalar(select(Composter).where(Composter.id == composter_id).with_for_update())
     if not composter:
         raise HTTPException(404, "Composter not found")
-    composter.needs_emptying = False
-    audit(db, actor, "composter", composter.id, "FULL_REPORT_CLEARED")
+    set_full_state_from_incident(db, actor, composter, False)
     db.commit()
     return {"status": "cleared"}
 
 
 @router.post("/composters/{composter_id}/full-state")
 def set_full_state(composter_id: str, data: FullStateRequest, db: Session = Depends(get_db), actor: User = Depends(require_roles(Role.ADMIN, Role.MODERATOR, Role.ENGINEER))):
-    composter = db.get(Composter, composter_id)
+    composter = db.scalar(select(Composter).where(Composter.id == composter_id).with_for_update())
     if not composter:
         raise HTTPException(404, "Composter not found")
-    composter.needs_emptying = data.needs_emptying
-    audit(db, actor, "composter", composter.id, "FULL_REPORTED" if data.needs_emptying else "FULL_REPORT_CLEARED")
+    set_full_state_from_incident(db, actor, composter, data.needs_emptying)
     db.commit()
     return {"status": "full" if data.needs_emptying else "cleared"}
 

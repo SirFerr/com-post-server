@@ -16,4 +16,5 @@
     </div>
   </article>
 {% else %}<div class="empty">Файлы не найдены.</div>{% endfor %}</section>
+{% if page > 1 or next_cursor %}<nav class="filters" aria-label="Страницы">{% if page > 1 %}<button type="button" onclick="history.back()">Назад</button>{% endif %}<span>Страница {{ page }}</span>{% if next_cursor %}<a href="?q={{ q|urlencode }}&cursor={{ next_cursor|urlencode }}&page={{ page + 1 }}">Дальше</a>{% endif %}</nav>{% endif %}
 {% endblock %}

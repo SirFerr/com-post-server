@@ -57,7 +57,7 @@ def moderation_history(db: Session = Depends(get_db), _: User = Depends(require_
 
 @router.post("/reviews/{review_id}")
 def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db), moderator: User = Depends(require_roles(Role.MODERATOR, Role.ADMIN))):
-    review = db.get(Review, review_id)
+    review = db.scalar(select(Review).where(Review.id == review_id).with_for_update())
     if not review:
         raise HTTPException(404, "Review not found")
     if review.status != ReviewStatus.PENDING:
@@ -93,7 +93,7 @@ def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db
 
 @router.post("/violations/{violation_id}/cancel")
 def cancel_violation(violation_id: str, db: Session = Depends(get_db), moderator: User = Depends(require_roles(Role.MODERATOR, Role.ADMIN))):
-    violation = db.get(Violation, violation_id)
+    violation = db.scalar(select(Violation).where(Violation.id == violation_id).with_for_update())
     if not violation:
         raise HTTPException(404, "Violation not found")
     violation.is_active = False

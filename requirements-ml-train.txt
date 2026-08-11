@@ -1,4 +1,4 @@
 -r requirements.txt
-ultralytics>=8.3.0
-onnx>=1.17.0
-onnxslim>=0.1.71
+ultralytics==8.3.191
+onnx==1.19.0
+onnxslim==0.1.66

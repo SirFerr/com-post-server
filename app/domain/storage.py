@@ -1,7 +1,10 @@
+import io
+import re
 import uuid
 
 import boto3
 from fastapi import HTTPException, UploadFile
+from PIL import Image, UnidentifiedImageError
 
 from ..config import get_settings
 
@@ -16,23 +19,36 @@ def _image_storage(endpoint_url: str):
     )
 
 
-def store_photo(file: UploadFile) -> str:
-    start = file.file.read(512)
-    file.file.seek(0)
-    if len(start) < 128:
-        raise HTTPException(422, "Изображение повреждено или не содержит данных")
-    is_jpeg = start.startswith(b"\xff\xd8\xff")
-    is_png = start.startswith(b"\x89PNG\r\n\x1a\n")
-    is_webp = start.startswith(b"RIFF") and start[8:12] == b"WEBP"
-    if not (is_jpeg or is_png or is_webp):
-        raise HTTPException(422, "Файл не является поддерживаемым изображением")
+def validated_image(file: UploadFile) -> tuple[bytes, str]:
     settings = get_settings()
-    key = f"deposits/{uuid.uuid4()}-{file.filename or 'photo.jpg'}"
+    payload = file.file.read(settings.max_photo_bytes + 1)
+    if len(payload) > settings.max_photo_bytes:
+        raise HTTPException(413, "Photo exceeds the allowed size")
+    if len(payload) < 128:
+        raise HTTPException(422, "Image is empty or corrupted")
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            image_format = image.format
+            if image_format not in {"JPEG", "PNG", "WEBP"}:
+                raise HTTPException(422, "Unsupported image format")
+            if image.width * image.height > settings.max_image_pixels:
+                raise HTTPException(413, "Image resolution exceeds the allowed limit")
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(422, "Image is corrupted or unsupported")
+    return payload, {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image_format]
+
+
+def store_photo(file: UploadFile) -> str:
+    payload, content_type = validated_image(file)
+    settings = get_settings()
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", file.filename or "photo.jpg").strip(".-") or "photo.jpg"
+    key = f"deposits/{uuid.uuid4()}-{safe_name[:120]}"
     _image_storage(settings.s3_endpoint).upload_fileobj(
-        file.file,
+        io.BytesIO(payload),
         settings.s3_bucket,
         key,
-        ExtraArgs={"ContentType": file.content_type or "image/jpeg"},
+        ExtraArgs={"ContentType": content_type},
     )
     return key
 

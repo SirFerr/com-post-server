@@ -11,4 +11,5 @@
   <p><strong>Батарея {{ item.battery_level }}%</strong> · замок {{ item.lock_state }}</p><small>Последний сигнал: {{ item.last_seen_at or 'ещё не получен' }}</small>
 </a>{% else %}<div class="empty">Оборудование не найдено.</div>{% endfor %}
 </section>
+{% if page > 1 or has_next %}<nav class="filters" aria-label="Страницы">{% if page > 1 %}<a href="?status={{ status }}&q={{ q }}&page={{ page - 1 }}">Назад</a>{% endif %}<span>Страница {{ page }}</span>{% if has_next %}<a href="?status={{ status }}&q={{ q }}&page={{ page + 1 }}">Дальше</a>{% endif %}</nav>{% endif %}
 {% endblock %}

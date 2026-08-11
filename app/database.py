@@ -39,6 +39,10 @@ def migrate_schema() -> None:
         statements.append("ALTER TABLE users ADD COLUMN ban_until TIMESTAMP NULL")
     if "warning_message" not in user_columns:
         statements.append("ALTER TABLE users ADD COLUMN warning_message VARCHAR(500) NULL")
+    if "token_version" not in user_columns:
+        statements.append("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in user_columns:
+        statements.append("ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP NULL")
     composter_columns = {column["name"] for column in inspector.get_columns("composters")}
     if "maintenance_mode" not in composter_columns:
         statements.append("ALTER TABLE composters ADD COLUMN maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE")

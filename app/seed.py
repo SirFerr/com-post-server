@@ -1,3 +1,5 @@
+import os
+
 from sqlalchemy import select
 
 from .database import Base, SessionLocal, engine
@@ -5,18 +7,17 @@ from .models import Role, User
 from .security import hash_password
 
 
-ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "Admin1234"
-
-
 def seed() -> None:
     """Create the single bootstrap administrator in an otherwise empty database."""
-    Base.metadata.create_all(engine)
+    email = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "").strip().lower()
+    password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not email or len(password) < 12:
+        raise RuntimeError("Set BOOTSTRAP_ADMIN_EMAIL and a BOOTSTRAP_ADMIN_PASSWORD of at least 12 characters")
     with SessionLocal() as db:
-        if not db.scalar(select(User).where(User.email == ADMIN_EMAIL)):
+        if not db.scalar(select(User).where(User.email == email)):
             db.add(User(
-                email=ADMIN_EMAIL,
-                password_hash=hash_password(ADMIN_PASSWORD),
+                email=email,
+                password_hash=hash_password(password),
                 role=Role.ADMIN,
                 full_name="Администратор",
             ))

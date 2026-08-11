@@ -7,6 +7,7 @@ email-validator==2.2.0
 PyJWT==2.10.1
 boto3==1.39.4
 Pillow==11.3.0
+alembic==1.16.5
 numpy==2.3.3
 python-multipart==0.0.20
 jinja2==3.1.6

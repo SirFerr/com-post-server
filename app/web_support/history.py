@@ -3,7 +3,7 @@ TITLES = {
     "USER_BLOCKED": "Пользователь заблокирован", "USER_UNBLOCKED": "Пользователь разблокирован",
     "USER_ROLE_CHANGED": "Роль пользователя изменена", "ALL_SESSIONS_REVOKED": "Все сессии завершены",
     "CONTAMINATION_REPORTED": "Выявлено загрязнение", "VIOLATION_RESOLVED": "Нарушение исправлено",
-    "SCORE_ADJUSTED": "Баланс изменён", "INCIDENT_CREATED": "Инцидент создан",
+    "SCORE_ADJUSTED": "Баланс изменён", "INCIDENT_CREATED": "Инцидент создан", "INCIDENT_RESOLVED": "Инцидент исправлен",
     "INCIDENT_UPDATED": "Инцидент изменён", "COMPOSTER_CREATED": "Компостер создан",
     "COMPOSTER_UPDATED": "Настройки компостера изменены", "COMPOSTER_DELETED": "Компостер удалён",
     "MAINTENANCE_MODE_CHANGED": "Режим обслуживания изменён", "MAINTENANCE_RECORDED": "Работа по обслуживанию записана",

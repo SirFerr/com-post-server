@@ -1,15 +1,37 @@
 {% extends "base.html" %}
 {% block title %}{{ composter.name }}{% endblock %}
 {% block content %}
-<a class="back" href="/web/equipment">← Оборудование</a> <a class="back" href="/web/map?focus={{ composter.id }}">Показать на карте</a>
+<a class="back" href="/web/equipment">← Оборудование</a>
 <header class="page-header detail-heading"><div><p class="eyebrow">{{ composter.device_id }}</p><h1>{{ composter.name }}</h1><p class="muted">{{ composter.latitude }}, {{ composter.longitude }}</p></div><span class="status {{ 'ok' if composter.is_available else 'off' }}">{{ 'Активен' if composter.is_available else 'Отключён' }}</span></header>
 {% if error %}<div class="alert page-alert">{{ error }}</div>{% endif %}
 <div class="detail-grid">
   <section class="panel"><h2>Состояние</h2><div class="facts"><div><small>Батарея</small><strong>{{ composter.battery_level }}%</strong></div><div><small>Замок</small><strong>{{ composter.lock_state }}</strong></div><div><small>Бак</small><strong>{{ 'Заполнен' if composter.needs_emptying else 'Не заполнен' }}</strong></div><div><small>Последний сигнал</small><strong>{{ composter.last_seen_at or 'Ещё нет' }}</strong></div></div></section>
-  <section class="panel"><h2>Заполненность</h2><div class="row-actions">
-    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if composter.needs_emptying }}">Заполнен</button></form>
-    <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not composter.needs_emptying }}">Не заполнен</button></form>
-  </div></section>
+  <section class="panel fullness-panel">
+    {% if actor.role.value in ['ADMIN','ENGINEER'] %}
+    <div class="row-actions">
+      <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="true"><button class="{{ 'selected' if composter.needs_emptying }}">Заполнен</button></form>
+      <form method="post" action="/web/equipment/{{ composter.id }}/full-state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="needs_emptying" value="false"><button class="{{ 'selected' if not composter.needs_emptying }}">Не заполнен</button></form>
+    </div>
+    {% else %}<span class="status {{ 'off' if composter.needs_emptying else 'ok' }}">{{ 'Заполнен' if composter.needs_emptying else 'Не заполнен' }}</span>{% endif %}
+    <div class="composter-quick-actions">
+      <a class="button-link secondary-link" href="/web/map?focus={{ composter.id }}">Показать на карте</a>
+      {% if actor.role.value in ['ADMIN','ENGINEER'] %}<button type="button" onclick="document.getElementById('composter-incident').showModal()">Создать инцидент</button>{% endif %}
+    </div>
+    {% if actor.role.value in ['ADMIN','ENGINEER'] %}
+    <dialog id="composter-incident" class="confirm-dialog">
+      <form method="post" action="/web/violations/create" enctype="multipart/form-data" class="form-grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="composter_id" value="{{ composter.id }}">
+        <h2 class="wide">Новый инцидент</h2>
+        <label>Тип<select name="kind"><option value="CONTAMINATION">Загрязнение</option><option value="OVERFLOW">Переполнение</option><option value="LOCK">Проблема с замком</option><option value="DEVICE">Проблема с устройством</option><option value="MAINTENANCE">Требуется обслуживание</option><option value="OTHER">Другое</option></select></label>
+        <label>Приоритет<select name="severity"><option value="LOW">Низкий</option><option value="MEDIUM" selected>Средний</option><option value="HIGH">Высокий</option><option value="CRITICAL">Критический</option></select></label>
+        <label class="wide">Комментарий <small>необязательно</small><textarea name="description" maxlength="5000" rows="4"></textarea></label>
+        <label class="wide">Фото <small>необязательно</small><input name="file" type="file" accept="image/*"></label>
+        <div class="dialog-actions wide"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Создать инцидент</button></div>
+      </form>
+    </dialog>
+    {% endif %}
+  </section>
 </div>
 {% if actor.role.value in ['ADMIN','ENGINEER'] %}<section class="panel action-panel"><h2>Настройки оборудования</h2><form id="equipment-form" method="post" action="/web/equipment/{{ composter.id }}" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Название<input name="name" value="{{ composter.name }}" required></label><label>Широта<input name="latitude" type="number" step="any" value="{{ composter.latitude }}" required></label><label>Долгота<input name="longitude" type="number" step="any" value="{{ composter.longitude }}" required></label><label class="check"><input name="available" type="checkbox" value="true" {% if composter.is_available %}checked{% endif %}> Компостер включён</label><button type="button" onclick="document.getElementById('equipment-confirm').showModal()">Сохранить изменения</button><dialog id="equipment-confirm" class="confirm-dialog"><h2>Подтвердите изменения</h2><p>Введите пароль текущего аккаунта. Настройки применятся после подтверждения.</p><label>Пароль аккаунта<input name="current_password" type="password" minlength="8" required autocomplete="current-password"></label><div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">Отмена</button><button type="submit">Подтвердить</button></div></dialog></form></section>{% endif %}
 <section class="history user-history composter-history">

@@ -34,10 +34,18 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_token(user: User) -> str:
+def create_token(user: User, session_id: str | None = None) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
-    payload = {"sub": user.id, "role": user.role.value, "iat": now, "exp": now + timedelta(minutes=settings.jwt_ttl_minutes)}
+    payload = {
+        "sub": user.id,
+        "role": user.role.value,
+        "ver": user.token_version,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.jwt_ttl_minutes),
+    }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -52,7 +60,7 @@ def create_auth_session(user: User, db: Session, device_name: str) -> tuple[str,
     )
     db.add(session)
     db.commit()
-    return create_token(user), raw_refresh
+    return create_token(user, session.id), raw_refresh
 
 
 def rotate_refresh_token(raw_refresh: str, db: Session) -> tuple[User, str, str]:
@@ -62,25 +70,39 @@ def rotate_refresh_token(raw_refresh: str, db: Session) -> tuple[User, str, str]
     if not session or session.revoked_at is not None or session.expires_at.replace(tzinfo=timezone.utc) <= now:
         raise HTTPException(401, "Invalid refresh token")
     user = db.get(User, session.user_id)
-    if not user:
+    if not user or user.deleted_at is not None:
         raise HTTPException(401, "User not found")
     replacement = secrets.token_urlsafe(48)
     session.refresh_token_hash = hashlib.sha256(replacement.encode()).hexdigest()
     session.last_used_at = now
     db.commit()
-    return user, create_token(user), replacement
+    return user, create_token(user, session.id), replacement
 
 
 def user_from_token(token: str, db: Session) -> User:
     try:
-        user_id = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])["sub"]
+        payload = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
+        user_id = payload["sub"]
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Access token expired")
     except (jwt.PyJWTError, KeyError):
         raise HTTPException(401, "Invalid access token")
     user = db.get(User, user_id)
-    if not user:
+    if not user or user.deleted_at is not None:
         raise HTTPException(401, "User not found")
+    if payload.get("ver") != user.token_version:
+        raise HTTPException(401, "Access token has been revoked")
+    session_id = payload.get("sid")
+    if session_id:
+        session = db.get(AuthSession, session_id)
+        now = datetime.now(timezone.utc)
+        if (
+            not session
+            or session.user_id != user.id
+            or session.revoked_at is not None
+            or session.expires_at.replace(tzinfo=timezone.utc) <= now
+        ):
+            raise HTTPException(401, "Access token has been revoked")
     return user
 
 
@@ -121,3 +143,25 @@ def signed_command(composter: Composter, session_id: str, action: str) -> dict:
     canonical = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
     data["signature"] = hmac.new(composter.secret.encode(), canonical, hashlib.sha256).hexdigest()
     return data
+
+
+def verify_device_response(
+    composter: Composter,
+    command_id: str,
+    status: str,
+    state: str,
+    device_id: str,
+    signature: str,
+) -> bool:
+    if device_id != composter.device_id or state not in {"OPEN", "CLOSED"}:
+        return False
+    payload = {
+        "commandId": command_id,
+        "deviceId": device_id,
+        "state": state,
+        "status": status,
+        "v": 1,
+    }
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    expected = hmac.new(composter.secret.encode(), canonical, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)

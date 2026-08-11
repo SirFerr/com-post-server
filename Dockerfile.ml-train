@@ -1,11 +1,14 @@
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libxcb1 \
     && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 10001 compost
 COPY requirements.txt requirements-ml-train.txt ./
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision \
     && pip install --no-cache-dir -r requirements-ml-train.txt
 COPY app app
 COPY tools tools
+RUN chown -R compost:compost /app /home/compost
+USER compost
 ENTRYPOINT ["python", "-m", "tools.ml_pipeline"]

@@ -1,3 +1,4 @@
+import io
 import json
 import secrets
 import uuid
@@ -16,6 +17,8 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .config import get_settings
+from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
+from .domain.storage import validated_image
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetPhotoArchive, MLDatasetSample, MLDatasetSampleArchive, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_token, verify_password, web_current_user
@@ -106,12 +109,13 @@ def login_page(request: Request):
 
 @router.post("/login")
 def login_submit(request: Request, email: str = Form(), password: str = Form(), db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == email.lower()))
+    user = db.scalar(select(User).where(User.email == email.lower(), User.deleted_at.is_(None)))
     if not user or not verify_password(password, user.password_hash) or user.role == Role.USER:
         return templates.TemplateResponse(request, "login.html", {"error": "Неверные данные или у аккаунта нет доступа к панели"}, status_code=401)
     response = RedirectResponse("/web/dashboard", 303)
-    response.set_cookie("compost_session", create_token(user), httponly=True, samesite="strict", max_age=3600)
-    response.set_cookie("compost_csrf", generate_csrf(), httponly=True, samesite="strict", max_age=3600)
+    cookie_secure = get_settings().cookie_secure
+    response.set_cookie("compost_session", create_token(user), httponly=True, secure=cookie_secure, samesite="strict", max_age=3600)
+    response.set_cookie("compost_csrf", generate_csrf(), httponly=True, secure=cookie_secure, samesite="strict", max_age=3600)
     return response
 
 
@@ -130,20 +134,21 @@ def dashboard(request: Request, db: Session = Depends(get_db), actor: User = Dep
 
 
 @router.get("/equipment")
-def equipment_page(request: Request, q: str = Query(""), status: str = Query("ALL"), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
-    composters = list(db.scalars(select(Composter).order_by(Composter.name)).all())
+def equipment_page(request: Request, q: str = Query(""), status: str = Query("ALL"), page: int = Query(1, ge=1), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+    query = select(Composter)
     needle = q.strip().lower()
     if needle:
-        composters = [item for item in composters if needle in item.name.lower() or needle in item.device_id.lower()]
+        query = query.where(or_(func.lower(Composter.name).contains(needle), func.lower(Composter.device_id).contains(needle)))
     if status == "ACTIVE":
-        composters = [item for item in composters if item.is_available]
+        query = query.where(Composter.is_available.is_(True))
     elif status == "DISABLED":
-        composters = [item for item in composters if not item.is_available]
+        query = query.where(Composter.is_available.is_(False))
     elif status == "FULL":
-        composters = [item for item in composters if item.needs_emptying]
+        query = query.where(Composter.needs_emptying.is_(True))
     elif status == "LOW_BATTERY":
-        composters = [item for item in composters if item.battery_level <= 20]
-    return templates.TemplateResponse(request, "equipment.html", page_context(request, actor, db, "equipment", composters=composters, q=q, status=status))
+        query = query.where(Composter.battery_level <= 20)
+    rows = list(db.scalars(query.order_by(Composter.name).offset((page - 1) * 50).limit(51)).all())
+    return templates.TemplateResponse(request, "equipment.html", page_context(request, actor, db, "equipment", composters=rows[:50], q=q, status=status, page=page, has_next=len(rows) > 50))
 
 
 @router.get("/equipment/{composter_id}")
@@ -188,29 +193,30 @@ def change_composter(
 @router.post("/equipment/{composter_id}/full-state")
 def change_full_state(request: Request, composter_id: str, needs_emptying: bool = Form(), from_moderation: bool = Form(False), csrf_token: str = Form(), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     csrf(request, csrf_token)
-    composter = db.get(Composter, composter_id)
+    require_role(actor, Role.ADMIN, Role.ENGINEER)
+    composter = db.scalar(select(Composter).where(Composter.id == composter_id).with_for_update())
     if not composter:
         raise HTTPException(404, "Composter not found")
-    composter.needs_emptying = needs_emptying
-    audit(db, actor, "composter", composter.id, "FULL_REPORTED" if needs_emptying else "FULL_REPORT_CLEARED")
+    set_full_state_from_incident(db, actor, composter, needs_emptying)
     db.commit()
     return RedirectResponse("/web/moderation" if from_moderation else f"/web/equipment/{composter.id}", 303)
 
 
 @router.get("/users")
-def users_page(request: Request, q: str = Query(""), status: str = Query("ALL"), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def users_page(request: Request, q: str = Query(""), status: str = Query("ALL"), page: int = Query(1, ge=1), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     require_role(actor, Role.ADMIN, Role.ENGINEER, Role.MODERATOR)
-    users = list(db.scalars(select(User).order_by(User.created_at.desc())).all())
+    query = select(User).where(User.deleted_at.is_(None))
     needle = q.strip().lower()
     if needle:
-        users = [item for item in users if needle in item.email.lower() or needle in item.full_name.lower()]
+        query = query.where(or_(func.lower(User.email).contains(needle), func.lower(User.full_name).contains(needle)))
     if status == "ACTIVE":
-        users = [item for item in users if not item.is_blocked]
+        query = query.where(User.is_blocked.is_(False))
     elif status == "BLOCKED":
-        users = [item for item in users if item.is_blocked]
+        query = query.where(User.is_blocked.is_(True))
     elif status == "STAFF":
-        users = [item for item in users if item.role != Role.USER]
-    return templates.TemplateResponse(request, "users.html", page_context(request, actor, db, "users", users=users, q=q, status=status))
+        query = query.where(User.role != Role.USER)
+    rows = list(db.scalars(query.order_by(User.created_at.desc()).offset((page - 1) * 50).limit(51)).all())
+    return templates.TemplateResponse(request, "users.html", page_context(request, actor, db, "users", users=rows[:50], q=q, status=status, page=page, has_next=len(rows) > 50))
 
 
 @router.get("/users/{user_id}")
@@ -312,6 +318,8 @@ def change_user(request: Request, user_id: str, role: str = Form(), blocked: boo
     user.is_blocked = blocked
     user.ban_reason = ban_reason.strip() if blocked else None
     user.ban_until = datetime.fromisoformat(ban_until) if blocked and ban_until else None
+    if user.role != previous_role or user.is_blocked != previous_blocked:
+        user.token_version += 1
     if user.role != previous_role:
         audit(db, actor, "user", user.id, "USER_ROLE_CHANGED", {"from": previous_role.value, "to": user.role.value})
     if user.is_blocked != previous_blocked:
@@ -453,12 +461,19 @@ def moderation_page(request: Request, db: Session = Depends(get_db), actor: User
 
 
 @router.get("/storage")
-def storage_page(request: Request, q: str = Query(""), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
+def storage_page(request: Request, q: str = Query(""), cursor: str | None = Query(None, max_length=1024), page: int = Query(1, ge=1), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     require_role(actor, Role.ADMIN, Role.ENGINEER, Role.MODERATOR)
     settings = get_settings()
     client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
     try:
-        objects = client.list_objects_v2(Bucket=settings.s3_bucket, Prefix=q.strip(), MaxKeys=200).get("Contents", [])
+        result = client.list_objects_v2(
+            Bucket=settings.s3_bucket,
+            Prefix=q.strip(),
+            MaxKeys=100,
+            **({"ContinuationToken": cursor} if cursor else {}),
+        )
+        objects = result.get("Contents", [])
+        next_cursor = result.get("NextContinuationToken")
         files = [
             {
                 "key": item["Key"],
@@ -476,8 +491,8 @@ def storage_page(request: Request, q: str = Query(""), db: Session = Depends(get
         files.sort(key=lambda item: item["modified"], reverse=True)
         storage_error = None
     except Exception as exc:
-        files, storage_error = [], str(exc)
-    return templates.TemplateResponse(request, "storage.html", page_context(request, actor, db, "storage", files=files, q=q, storage_error=storage_error))
+        files, storage_error, next_cursor = [], str(exc), None
+    return templates.TemplateResponse(request, "storage.html", page_context(request, actor, db, "storage", files=files, q=q, storage_error=storage_error, next_cursor=next_cursor, page=page))
 
 
 @router.get("/storage/object/{object_key:path}")
@@ -590,10 +605,11 @@ def storage_upload(request: Request, file: UploadFile = File(), csrf_token: str 
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(415, "Можно загружать только изображения")
     settings = get_settings()
+    payload, content_type = validated_image(file)
     safe_name = (file.filename or "photo.jpg").replace("/", "_").replace("\\", "_")
     key = f"engineering/{actor.id}/{secrets.token_hex(8)}-{safe_name}"
     client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
-    client.upload_fileobj(file.file, settings.s3_bucket, key, ExtraArgs={"ContentType": file.content_type})
+    client.upload_fileobj(io.BytesIO(payload), settings.s3_bucket, key, ExtraArgs={"ContentType": content_type})
     audit(db, actor, "storage", actor.id, "ENGINEERING_PHOTO_UPLOADED", {"key": key})
     db.commit()
     return RedirectResponse("/web/storage?q=engineering/", 303)
@@ -872,6 +888,11 @@ def deploy_training_run_page(
     run = db.get(ModelTrainingRun, run_id)
     if not run or run.status != "PASSED" or not run.artifact_prefix:
         raise HTTPException(409, "Кандидат не прошёл контроль качества")
+    metrics = json.loads(run.metrics or "{}")
+    dataset = db.scalar(select(DatasetVersion).where(DatasetVersion.version == run.dataset_version))
+    readiness = training_readiness(json.loads(dataset.manifest)) if dataset else {"deployable": False}
+    if not metrics.get("production_eligible") or not readiness["deployable"]:
+        raise HTTPException(409, "Экспериментальную модель нельзя публиковать без независимой тестовой выборки")
     client = boto3.client(
         "s3",
         endpoint_url=get_settings().s3_endpoint,
@@ -1000,6 +1021,8 @@ def create_violation_web(
     )
     db.add(incident)
     db.flush()
+    if incident.kind == "OVERFLOW" and composter:
+        composter.needs_emptying = True
     audit(db, actor, "incident", incident.id, "INCIDENT_CREATED", {
         "composter_id": incident.composter_id,
         "kind": incident.kind,
@@ -1082,7 +1105,10 @@ def resolve_violation_web(request: Request, violation_id: str, csrf_token: str =
         incident.status = "RESOLVED"
         incident.resolved_by = actor.id
         incident.resolved_at = datetime.now(timezone.utc)
-        audit(db, actor, "incident", incident.id, "VIOLATION_RESOLVED", {"composter_id": incident.composter_id})
+        db.flush()
+        if incident.kind == "OVERFLOW":
+            sync_full_state_after_incident_change(db, incident.composter_id)
+        audit_incident_resolved(db, actor, incident, "WEB")
         db.commit()
         return RedirectResponse("/web/violations", 303)
     violation.is_active = False

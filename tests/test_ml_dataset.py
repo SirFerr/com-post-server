@@ -30,6 +30,24 @@ def test_training_readiness_requires_volume_boxes_and_sites():
     assert training_readiness(manifest)["trainable"] is False
 
 
+def test_deployment_requires_balanced_independent_test_set():
+    samples = [
+        {"source": "manual", "user_id": None, "split": "test", "label": label}
+        for label in ("clean", "contamination")
+        for _ in range(20)
+    ]
+    manifest = {
+        "schema_version": 5,
+        "selection_policy": "admin-selected-reviewed-v1",
+        "privacy_policy": "minimized-reviewed-photos-v1",
+        "samples": samples,
+        "summary": {"samples": 200, "annotated_contamination": 50, "sources": 3, "splits": {"test": 40}},
+    }
+    assert training_readiness(manifest)["deployable"] is True
+    manifest["samples"].pop()
+    assert training_readiness(manifest)["deployable"] is False
+
+
 def test_legacy_or_user_photo_manifests_are_blocked():
     legacy = {"schema_version": 3, "summary": {"samples": 200, "annotated_contamination": 50, "sources": 3}, "samples": []}
     assert training_readiness(legacy)["privacy_safe"] is False

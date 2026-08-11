@@ -22,7 +22,13 @@ def firmware_rows() -> list[dict]:
     settings = get_settings()
     client = firmware_s3()
     result = []
-    for item in client.list_objects_v2(Bucket=settings.firmware_s3_bucket).get("Contents", []):
+    paginator = client.get_paginator("list_objects_v2")
+    objects = (
+        item
+        for page in paginator.paginate(Bucket=settings.firmware_s3_bucket)
+        for item in page.get("Contents", [])
+    )
+    for item in objects:
         head = client.head_object(Bucket=settings.firmware_s3_bucket, Key=item["Key"])
         result.append({
             "key": item["Key"],

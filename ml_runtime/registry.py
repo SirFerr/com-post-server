@@ -8,7 +8,7 @@ import onnxruntime as ort
 from app.config import get_settings
 from ml_runtime.storage import s3_client
 
-MODEL_DIR = Path("/models")
+MODEL_DIR = Path.home() / ".cache" / "compost" / "models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_REFRESH_SECONDS = 30
 

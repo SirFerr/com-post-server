@@ -529,6 +529,7 @@ def test_staff_web_login_and_role_sections(client):
     assert "equipment-confirm" in equipment_detail.text
     assert 'data-history-filter="ACCESS"' in equipment_detail.text
     assert 'data-history-filter="FULL"' in equipment_detail.text
+    assert 'data-history-filter="INCIDENT"' in equipment_detail.text
     assert 'data-history-filter="SETTINGS"' in equipment_detail.text
     assert "Действия и фотографии оборудования" in equipment_detail.text
 
@@ -542,6 +543,7 @@ def test_staff_web_login_and_role_sections(client):
     assert 'data-history-filter="POINTS"' in user_detail.text
     assert 'data-history-filter="BANS"' in user_detail.text
     assert 'data-history-filter="ROLES"' in user_detail.text
+    assert 'data-history-filter="INCIDENT"' in user_detail.text
     assert "Действия, проверки и фотографии" in user_detail.text
     assert "Сессии компостирования" not in user_detail.text
     role_change = client.post(
@@ -800,6 +802,8 @@ def test_resolved_incident_appears_in_composter_and_reporter_history(client):
     reporter_page = client.get("/web/users/user-1")
     assert "Инцидент исправлен" in composter_page.text
     assert "Инцидент исправлен" in reporter_page.text
+    assert "history-kind-incident" in composter_page.text
+    assert "history-kind-incident" in reporter_page.text
     assert 'href="/web/violations/reported-incident"' in composter_page.text
     assert 'href="/web/violations/reported-incident"' in reporter_page.text
     with SessionLocal() as db:

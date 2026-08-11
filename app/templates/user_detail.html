@@ -50,6 +50,7 @@
     <button type="button" class="history-filter" data-history-filter="POINTS">Баллы</button>
     <button type="button" class="history-filter" data-history-filter="BANS">Блокировки</button>
     <button type="button" class="history-filter" data-history-filter="ROLES">Роли</button>
+    <button type="button" class="history-filter" data-history-filter="INCIDENT">Инциденты</button>
   </div>
   {% for item in history %}
   <article class="clickable-card" data-history-action="{{ item.action }}" data-history-category="{{ item.category or '' }}" data-card-href="{{ item.detail_url }}" role="link" tabindex="0"><span></span><div>

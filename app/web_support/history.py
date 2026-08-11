@@ -31,8 +31,10 @@ def history_presentation(action: str) -> tuple[str, str, str]:
         return title, "Роль", "role"
     if "CONTAMINATION" in action or "VIOLATION" in action:
         return title, "Нарушение", "violation"
+    if "INCIDENT" in action:
+        return title, "Инцидент", "incident"
     equipment_actions = {"OPEN_REQUESTED", "CLOSE_REQUESTED", "PROVISIONING_RESUMED", "PROVISIONING_COMPLETED", "TELEMETRY_RECORDED"}
-    if any(value in action for value in ("INCIDENT", "MAINTENANCE", "COMPOSTER", "FULL_", "DEBUG_")) or action in equipment_actions:
+    if any(value in action for value in ("MAINTENANCE", "COMPOSTER", "FULL_", "DEBUG_")) or action in equipment_actions:
         return title, "Оборудование", "equipment"
     if "ML_" in action:
         return title, "ML", "ml"

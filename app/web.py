@@ -39,6 +39,11 @@ def history_rows(db: Session, conditions) -> list[dict]:
     result = []
     for row in rows:
         media = {"photo_url": None, "annotations": [], "composter": None}
+        details = json.loads(row.details or "{}")
+        detail_url = f"/web/history/{row.id}"
+        incident_id = details.get("incident_id")
+        if "INCIDENT" in row.action and incident_id:
+            detail_url = f"/web/violations/{incident_id}"
         if row.entity == "review":
             review = db.get(Review, row.entity_id)
             if review:
@@ -49,12 +54,11 @@ def history_rows(db: Session, conditions) -> list[dict]:
                     "composter": db.get(Composter, session.composter_id) if session else None,
                 }
         elif row.entity == "composter" and row.action == "CONTAMINATION_REPORTED":
-            details = json.loads(row.details or "{}")
             incident = db.get(Incident, details.get("incident_id")) if details.get("incident_id") else None
             if incident and incident.photo_key:
                 media = {"photo_url": photo_url(incident.photo_key), "annotations": [], "composter": db.get(Composter, row.entity_id)}
         title, tag, tag_class = history_presentation(row.action)
-        result.append({"row": row, "action": row.action, "actor": actors.get(row.user_id), "title": title, "tag": tag, "tag_class": tag_class, "created_at": row.created_at, "detail_url": f"/web/history/{row.id}", **media})
+        result.append({"row": row, "action": row.action, "actor": actors.get(row.user_id), "title": title, "tag": tag, "tag_class": tag_class, "created_at": row.created_at, "detail_url": detail_url, **media})
     return result
 
 

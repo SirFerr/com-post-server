@@ -727,6 +727,9 @@ def test_web_full_state_is_backed_by_single_overflow_incident(client):
         assert incident.status == "RESOLVED"
         assert incident.resolved_by == "admin-1"
         assert db.get(Composter, "composter-1").needs_emptying is False
+    history_page = client.get("/web/equipment/composter-1")
+    assert "Инцидент создан" in history_page.text
+    assert "Инцидент исправлен" in history_page.text
 
 
 def test_resolved_incident_appears_in_composter_and_reporter_history(client):
@@ -758,6 +761,8 @@ def test_resolved_incident_appears_in_composter_and_reporter_history(client):
     reporter_page = client.get("/web/users/user-1")
     assert "Инцидент исправлен" in composter_page.text
     assert "Инцидент исправлен" in reporter_page.text
+    assert 'href="/web/violations/reported-incident"' in composter_page.text
+    assert 'href="/web/violations/reported-incident"' in reporter_page.text
     with SessionLocal() as db:
         rows = list(db.scalars(select(AuditLog).where(
             AuditLog.action == "INCIDENT_RESOLVED",

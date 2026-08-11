@@ -60,11 +60,14 @@ def set_full_state_from_incident(
         if not active:
             db.add(incident)
             db.flush()
-            audit(db, actor, "incident", incident.id, "INCIDENT_CREATED", {
+            creation_details = {
                 "composter_id": composter.id,
                 "kind": "OVERFLOW",
                 "source": "FULL_STATE",
-            })
+                "incident_id": incident.id,
+            }
+            audit(db, actor, "incident", incident.id, "INCIDENT_CREATED", creation_details)
+            audit(db, actor, "composter", composter.id, "INCIDENT_CREATED", creation_details)
         composter.needs_emptying = True
         audit(db, actor, "composter", composter.id, "FULL_REPORTED", {"incident_id": incident.id})
         return incident

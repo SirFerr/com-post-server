@@ -53,7 +53,7 @@
 .dataset-list article>*{min-width:0}.dataset-list article div{display:grid}.dataset-list article small{overflow-wrap:anywhere}.dataset-list article a{color:var(--accent);font-weight:800;text-decoration:none;white-space:nowrap}
 @media(max-width:950px){.ml-stats{grid-template-columns:repeat(2,1fr)}.ml-grid{grid-template-columns:1fr}.ml-upload-fields{grid-template-columns:1fr}}
 @media(max-width:650px){.ml-steps li{grid-template-columns:34px 1fr}.ml-steps li span{grid-column:2}.ml-actions{align-items:stretch;flex-direction:column}.ml-actions button,.ml-actions form{width:100%}.dataset-list article{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}.dataset-list article div{grid-column:1/-1}.dataset-list article>:nth-child(3){justify-self:end}.dataset-list article a{justify-self:end}.section-heading{flex-wrap:wrap}.section-heading>div{min-width:0}}
-:root{--text:#dce9df;--muted:#9fb3a6}
+:root{--bg:#0b0e0c;--panel:#151a16;--panel2:#222823;--line:#3b443e;--text:#f4f7f5;--muted:#aab5ae;--accent:#d7ff39;--accent-dark:#334600;--link:#a8d977;--danger:#ff776f;--danger-soft:#3a2321;--danger-on-soft:#ff9c95;--warn:#ffc857;--success:#82e99b;--success-soft:#173421;--info:#9fd0ff;--info-soft:#26313a;--surface-soft:#101411;--radius-control:12px;--radius-card:20px}
 button:disabled{cursor:not-allowed;filter:saturate(.2);opacity:.55}
 .ml-control{display:flex;align-items:center;justify-content:space-between;gap:18px}.ml-control h2{margin:4px 0}.ml-control p{margin:0}.ml-training-form{display:flex;align-items:end;gap:8px;min-width:min(100%,330px)}.ml-training-form label{display:grid;flex:1;gap:5px;color:var(--muted);font-size:12px}.ml-training-form select{min-width:0}.ml-training-form button{white-space:nowrap}.ml-training-unavailable{display:grid;max-width:360px;gap:7px}.ml-training-unavailable small{color:var(--muted)}.training-list form{margin:0}.training-list button{padding:8px 11px}@media(max-width:700px){.ml-control{align-items:stretch;flex-direction:column}.ml-training-form{align-items:stretch;flex-direction:column;min-width:0;width:100%}.ml-training-form button{width:100%}.ml-training-unavailable{max-width:none}}
 .user-header{margin-bottom:16px}
@@ -124,3 +124,12 @@ textarea{width:100%;max-width:100%;resize:vertical;border:1px solid var(--line);
 .annotation-coordinates .section-heading{margin-bottom:14px}.annotation-coordinates .section-heading h2{margin-bottom:5px}.annotation-coordinate-list{display:grid;gap:8px}.annotation-coordinate-list>div:not(.empty){display:grid;grid-template-columns:minmax(150px,.45fr) minmax(0,1fr) auto;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:#101411}.annotation-coordinate-list code{min-width:0;overflow-wrap:anywhere;color:#b7d7c1;font-size:12px}.annotation-coordinate-list button{padding:7px 10px}
 @media(max-width:650px){.annotation-view-toolbar{align-items:stretch;flex-direction:column}.annotation-view-toolbar button{width:100%}.storage-annotation-actions{grid-template-columns:1fr}.annotation-coordinate-list>div:not(.empty){grid-template-columns:1fr}.annotation-coordinate-list button{width:100%}}
 .flash-boot-hint{max-width:620px;margin:12px 0 0;padding:10px 12px;border:1px solid #5c6727;border-radius:12px;background:#252b16;color:#dce99b;font-size:13px;line-height:1.45}.flash-boot-hint strong{color:var(--accent)}
+.panel,.feature-card,.entity-card,.stats>*,.empty{border-radius:var(--radius-card)}
+button,.button-link,.filters a{border-radius:var(--radius-control)}
+input,select,textarea{border-radius:var(--radius-control);background:var(--surface-soft);color:var(--text)}
+button:focus-visible,.button-link:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.quality-bar{height:28px;overflow:hidden;border-radius:14px;background:var(--danger)}
+.quality-bar-value{height:100%;background:var(--success)}
+.table-photo{display:block;width:84px;height:64px;object-fit:cover;border-radius:var(--radius-control)}
+.status.ok{background:var(--success-soft);color:var(--success)}
+.status.off{background:var(--danger-soft);color:var(--danger-on-soft)}

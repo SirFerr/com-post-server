@@ -1,0 +1,4 @@
+-r requirements-ml-runtime.txt
+pytest==9.0.3
+pip-audit==2.10.1
+ruff==0.16.8

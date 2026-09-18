@@ -17,13 +17,15 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .domain.scores import locked_score
+from .domain.reviews import decide_review
 from .config import get_settings
 from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
 from .domain.storage import validated_image
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetPhotoArchive, MLDatasetSample, MLDatasetSampleArchive, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
-from .security import create_token, verify_password, web_current_user
-from .services import apply_violation, audit, create_moderation_incident, incident_title, photo_url, reward_review, store_photo
+from .security import create_web_session, revoke_web_session, verify_password, web_current_user
+from .services import audit, incident_title, photo_url, store_photo
 from .web_support.security import csrf, generate_csrf, require_role
 from .web_support.storage import firmware_rows, firmware_s3, human_size, normalized_annotations, storage_file_label
 from .web_support.context import page_context
@@ -115,20 +117,21 @@ def login_page(request: Request):
 @router.post("/login")
 def login_submit(request: Request, email: str = Form(), password: str = Form(), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == email.lower(), User.deleted_at.is_(None)))
-    if not user or not verify_password(password, user.password_hash) or user.role == Role.USER:
+    if not user or not verify_password(password, user.password_hash) or user.role == Role.USER or user.is_blocked:
         return templates.TemplateResponse(request, "login.html", {"error": "Неверные данные или у аккаунта нет доступа к панели"}, status_code=401)
     response = RedirectResponse("/web/dashboard", 303)
     settings = get_settings()
     cookie_max_age = settings.web_session_ttl_days * 24 * 60 * 60
-    web_token = create_token(user, ttl_minutes=settings.web_session_ttl_days * 24 * 60)
+    web_token = create_web_session(user, db)
     response.set_cookie("compost_session", web_token, httponly=True, secure=settings.cookie_secure, samesite="strict", max_age=cookie_max_age)
     response.set_cookie("compost_csrf", generate_csrf(), httponly=True, secure=settings.cookie_secure, samesite="strict", max_age=cookie_max_age)
     return response
 
 
 @router.post("/logout")
-def logout(request: Request, csrf_token: str = Form()):
+def logout(request: Request, csrf_token: str = Form(), db: Session = Depends(get_db)):
     csrf(request, csrf_token)
+    revoke_web_session(request.cookies.get("compost_session"), db)
     response = RedirectResponse("/web/login", 303)
     response.delete_cookie("compost_session")
     response.delete_cookie("compost_csrf")
@@ -172,8 +175,8 @@ def change_composter(
     request: Request,
     composter_id: str,
     name: str = Form(),
-    latitude: float = Form(),
-    longitude: float = Form(),
+    latitude: float = Form(ge=-90, le=90, allow_inf_nan=False),
+    longitude: float = Form(ge=-180, le=180, allow_inf_nan=False),
     available: bool = Form(False),
     current_password: str = Form(),
     csrf_token: str = Form(),
@@ -316,6 +319,8 @@ def change_user(request: Request, user_id: str, role: str = Form(), blocked: boo
     if not user:
         raise HTTPException(404, "User not found")
     requested_role = Role(role)
+    if user.id == actor.id and blocked:
+        raise HTTPException(409, "Нельзя заблокировать собственную учётную запись администратора")
     if user.role == Role.ADMIN and requested_role != Role.ADMIN:
         admin_count = db.scalar(select(func.count(User.id)).where(User.role == Role.ADMIN)) or 0
         if admin_count <= 1:
@@ -343,10 +348,7 @@ def change_user_score(request: Request, user_id: str, amount: int = Form(), reas
         return RedirectResponse(f"/web/users/{user_id}?error=Неверный+пароль", 303)
     if not -10_000 <= amount <= 10_000 or len(reason.strip()) < 3:
         raise HTTPException(422, "Некорректная корректировка")
-    score = db.get(UserScore, user_id)
-    if not score:
-        score = UserScore(user_id=user_id, points=0)
-        db.add(score)
+    score = locked_score(db, user_id)
     score.points += amount
     db.flush()
     db.add(ScoreTransaction(user_id=user_id, amount=amount, balance_after=score.points, reason=reason.strip(), actor_id=actor.id))
@@ -1233,32 +1235,9 @@ def moderate_review(request: Request, review_id: str, action: str = Form(), comm
         raise HTTPException(422, "Unknown moderation action")
     approved = action != "CONTAMINATION"
     create_incident = action == "INCIDENT"
-    review = db.get(Review, review_id)
-    if review and review.status == ReviewStatus.PENDING:
-        review.status = ReviewStatus.APPROVED if approved else ReviewStatus.REJECTED
-        review.comment = (comment.strip() or None) if create_incident else (None if approved else "Обнаружено загрязнение")
-        boxes = normalized_annotations(annotations)
-        review.annotations = json.dumps(boxes, ensure_ascii=False)
-        review.reviewed_by = actor.id
-        review.reviewed_at = datetime.now(timezone.utc)
-        session = db.get(AccessSession, review.session_id)
-        user = db.get(User, session.user_id)
-        if create_incident:
-            try:
-                incident = create_moderation_incident(db, actor, session.composter_id, incident_kind, comment, review.id, review.photo_key)
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-            if incident is None:
-                raise HTTPException(422, "Incident type is required")
-        was_blocked = user.is_blocked
-        if not approved:
-            review.violation_reason = "CONTAMINATION"
-            apply_violation(db, review, session, review.violation_reason)
-            if not was_blocked and user.is_blocked:
-                audit(db, actor, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})
-        reward_review(db, session, approved)
-        audit(db, actor, "review", review.id, "REVIEW_APPROVED" if approved else "REVIEW_REJECTED")
-        db.commit()
+    decide_review(db, actor, review_id, approved=approved, create_incident=create_incident,
+                  incident_kind=incident_kind, comment=comment,
+                  annotations=normalized_annotations(annotations))
     return RedirectResponse("/web/moderation", 303)
 
 

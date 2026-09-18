@@ -1,7 +1,8 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import AccessSession, Review, ScoreTransaction, User, UserScore, Violation
+from ..models import AccessSession, Review, ScoreTransaction, User, Violation
+from .scores import locked_score
 
 
 def apply_violation(db: Session, review: Review, session: AccessSession, reason: str) -> None:
@@ -27,10 +28,7 @@ def apply_violation(db: Session, review: Review, session: AccessSession, reason:
 
 
 def reward_review(db: Session, session: AccessSession, approved: bool) -> None:
-    score = db.get(UserScore, session.user_id)
-    if not score:
-        score = UserScore(user_id=session.user_id, points=0, total_uploads=0, valid_uploads=0)
-        db.add(score)
+    score = locked_score(db, session.user_id)
     score.total_uploads += 1
     if approved:
         score.valid_uploads += 1

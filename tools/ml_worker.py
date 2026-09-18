@@ -46,6 +46,8 @@ def run_next() -> bool:
             select(ModelTrainingRun)
             .where(ModelTrainingRun.status == "QUEUED")
             .order_by(ModelTrainingRun.created_at)
+            .limit(1)
+            .with_for_update(skip_locked=True)
         )
         if not run:
             return False

@@ -34,20 +34,23 @@ class RateLimitMiddleware:
         except ValueError:
             trusted = False
         if trusted:
-            forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-            if forwarded:
+            # Walk from the trusted peer towards the client. The leftmost
+            # address may have been supplied by the client itself.
+            for forwarded in reversed(request.headers.get("x-forwarded-for", "").split(",")):
                 try:
-                    return str(ipaddress.ip_address(forwarded))
+                    address = ipaddress.ip_address(forwarded.strip())
                 except ValueError:
-                    pass
+                    return direct
+                if not any(address in network for network in self._trusted_proxies):
+                    return str(address)
         return direct
 
     @staticmethod
     def _limit(request: Request) -> tuple[int, int] | None:
-        path = request.url.path
+        path = request.url.path.rstrip("/")
         if request.method == "POST" and path in {"/auth/login", "/auth/register", "/auth/refresh", "/web/login"}:
             return 60, 60
-        if request.method == "POST" and ("photo" in path or path.startswith("/incidents")):
+        if request.method == "POST" and ("photo" in path or path.startswith("/incidents") or "/incident-report" in path or path == "/web/storage/upload"):
             return 30, 60
         return None
 
@@ -60,7 +63,11 @@ class RateLimitMiddleware:
         if limit:
             maximum, window = limit
             client = self._client_ip(request)
-            key = f"{client}:{request.method}:{request.url.path}"
+            # Share an allowance across resource IDs and slash redirects.
+            # Otherwise changing the ID bypasses the upload quota and grows
+            # the in-memory dictionary for every new URL.
+            category = "auth" if maximum == 60 else "upload"
+            key = f"{client}:{category}"
             now = time.monotonic()
             with self._lock:
                 if now - self._last_sweep >= 60:

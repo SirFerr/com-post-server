@@ -299,7 +299,7 @@ def test_request_ids_and_metrics_are_exposed_internally(client):
 
 
 def test_ready_health_checks_dependencies(client, monkeypatch):
-    from app import main
+    from app.api import health
 
     class Storage:
         def head_bucket(self, **_):
@@ -312,8 +312,8 @@ def test_ready_health_checks_dependencies(client, monkeypatch):
         def __exit__(self, *_):
             return False
 
-    monkeypatch.setattr(main.boto3, "client", lambda *_, **__: Storage())
-    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *_, **__: HealthyResponse())
+    monkeypatch.setattr(health.boto3, "client", lambda *_, **__: Storage())
+    monkeypatch.setattr(health.urllib.request, "urlopen", lambda *_, **__: HealthyResponse())
     response = client.get("/health/ready")
     assert response.status_code == 200
     assert response.json()["status"] == "ready"

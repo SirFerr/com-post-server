@@ -11,6 +11,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 
 from .config import get_settings
 from .database import get_db
@@ -64,6 +65,33 @@ def create_auth_session(user: User, db: Session, device_name: str) -> tuple[str,
     return create_token(user, session.id), raw_refresh
 
 
+def create_web_session(user: User, db: Session) -> str:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    session = AuthSession(
+        user_id=user.id,
+        refresh_token_hash=hashlib.sha256(secrets.token_bytes(48)).hexdigest(),
+        device_name="Web console",
+        expires_at=now + timedelta(days=settings.web_session_ttl_days),
+    )
+    db.add(session)
+    db.commit()
+    return create_token(user, session.id, ttl_minutes=settings.web_session_ttl_days * 24 * 60)
+
+
+def revoke_web_session(token: str | None, db: Session) -> None:
+    if not token:
+        return
+    try:
+        payload = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return
+    session = db.get(AuthSession, payload.get("sid")) if payload.get("sid") else None
+    if session and session.user_id == payload.get("sub"):
+        session.revoked_at = datetime.now(timezone.utc)
+        db.commit()
+
+
 def rotate_refresh_token(raw_refresh: str, db: Session) -> tuple[User, str, str]:
     digest = hashlib.sha256(raw_refresh.encode()).hexdigest()
     session = db.query(AuthSession).filter(AuthSession.refresh_token_hash == digest).one_or_none()
@@ -74,8 +102,18 @@ def rotate_refresh_token(raw_refresh: str, db: Session) -> tuple[User, str, str]
     if not user or user.deleted_at is not None:
         raise HTTPException(401, "User not found")
     replacement = secrets.token_urlsafe(48)
-    session.refresh_token_hash = hashlib.sha256(replacement.encode()).hexdigest()
-    session.last_used_at = now
+    # Compare-and-swap: only one request may consume this refresh token, even
+    # when another transaction has rotated or revoked it since the SELECT.
+    changed = db.execute(
+        update(AuthSession)
+        .where(AuthSession.id == session.id, AuthSession.refresh_token_hash == digest,
+               AuthSession.revoked_at.is_(None), AuthSession.expires_at > now)
+        .values(refresh_token_hash=hashlib.sha256(replacement.encode()).hexdigest(), last_used_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if changed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(401, "Invalid refresh token")
     db.commit()
     return user, create_token(user, session.id), replacement
 
@@ -118,11 +156,15 @@ def web_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = user_from_token(token, db)
     if user.role == Role.USER:
         raise HTTPException(403, "Staff account required")
+    if user.is_blocked:
+        raise HTTPException(403, "Staff account is blocked")
     return user
 
 
 def require_roles(*roles: Role):
     def dependency(user: User = Depends(current_user)) -> User:
+        if user.is_blocked:
+            raise HTTPException(403, "Staff account is blocked")
         if user.role not in roles:
             raise HTTPException(403, "Insufficient permissions")
         return user

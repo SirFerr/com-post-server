@@ -11,7 +11,11 @@ logger = logging.getLogger("compost.http")
 _metrics: Counter[tuple[str, str, int]] = Counter()
 _lock = threading.Lock()
 _identifier = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
-_path_id = re.compile(r"/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?=/|$)")
+_methods = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"})
+
+
+def _label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def metrics_text() -> str:
@@ -19,7 +23,7 @@ def metrics_text() -> str:
     with _lock:
         values = sorted(_metrics.items())
     for (method, path, status), count in values:
-        lines.append(f'compost_http_requests_total{{method="{method}",path="{path}",status="{status}"}} {count}')
+        lines.append(f'compost_http_requests_total{{method="{_label(method)}",path="{_label(path)}",status="{status}"}} {count}')
     return "\n".join(lines) + "\n"
 
 
@@ -48,8 +52,11 @@ class ObservabilityMiddleware:
             await self.app(scope, receive, observed_send)
         finally:
             method = scope.get("method", "")
+            if method not in _methods:
+                method = "OTHER"
             route = scope.get("route")
-            path = getattr(route, "path", None) or _path_id.sub("/{id}", scope.get("path", ""))
+            # Never use user-controlled URLs as metric labels (including 404s).
+            path = getattr(route, "path", None) or ("/static/{path}" if scope.get("path", "").startswith("/static/") else "__unmatched__")
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
             with _lock:
                 _metrics[(method, path, status_code)] += 1

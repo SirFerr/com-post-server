@@ -12,6 +12,7 @@
 app/
   api/                 JSON API feature routers
   domain/              business operations
+  queries/             bounded read-side database queries
   web_support/         shared web concerns
   templates/components reusable Jinja UI
   main.py              application factory only

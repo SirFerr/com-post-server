@@ -1,7 +1,7 @@
 {$DOMAIN} {
 	encode zstd gzip
 	request_body {
-		max_size 16MB
+		max_size 36MB
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

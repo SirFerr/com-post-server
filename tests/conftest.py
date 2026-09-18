@@ -1,6 +1,6 @@
 import os
 
-os.environ["DATABASE_URL"] = "sqlite://"
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", "sqlite://")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,10 +10,18 @@ from app.api import composters
 from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import Composter, Role, User
+from app.rate_limit import RateLimitMiddleware
 from app.security import hash_password
 
 @pytest.fixture(autouse=True)
 def database(monkeypatch):
+    middleware = app.middleware_stack
+    while middleware is not None:
+        if isinstance(middleware, RateLimitMiddleware):
+            with middleware._lock:
+                middleware._events.clear()
+        middleware = getattr(middleware, "app", None)
+
     def fake_store_photo(file):
         return f"test/deposits/{file.filename or 'photo.jpg'}"
 

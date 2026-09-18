@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.venv*
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+.env*
+backups
+dependency-audit*.json
+tests
+docs
+deploy

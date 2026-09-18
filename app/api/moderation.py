@@ -1,15 +1,15 @@
 import json
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..domain.reviews import decide_review
 from ..models import AccessSession, Review, ReviewStatus, Role, User, Violation
 from ..schemas import ModerateRequest
 from ..security import require_roles
-from ..services import apply_violation, audit, create_moderation_incident, photo_url, reward_review
+from ..services import audit, photo_url
 
 router = APIRouter(prefix="/moderation")
 
@@ -57,38 +57,9 @@ def moderation_history(db: Session = Depends(get_db), _: User = Depends(require_
 
 @router.post("/reviews/{review_id}")
 def moderate(review_id: str, data: ModerateRequest, db: Session = Depends(get_db), moderator: User = Depends(require_roles(Role.MODERATOR, Role.ADMIN))):
-    review = db.scalar(select(Review).where(Review.id == review_id).with_for_update())
-    if not review:
-        raise HTTPException(404, "Review not found")
-    if review.status != ReviewStatus.PENDING:
-        return {"status": review.status}
-    if data.create_incident and not data.approved:
-        raise HTTPException(422, "An incident cannot be combined with a contamination rejection")
-    review.status = ReviewStatus.APPROVED if data.approved else ReviewStatus.REJECTED
-    comment = (data.comment or "").strip()
-    review.comment = (comment or None) if data.create_incident else (None if data.approved else "Обнаружено загрязнение")
-    review.annotations = json.dumps(data.annotations, ensure_ascii=False)
-    review.reviewed_by = moderator.id
-    review.reviewed_at = datetime.now(timezone.utc)
-    session = db.get(AccessSession, review.session_id)
-    user = db.get(User, session.user_id)
-    if data.create_incident:
-        try:
-            incident = create_moderation_incident(db, moderator, session.composter_id, data.incident_kind, data.comment, review.id, review.photo_key)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        if incident is None:
-            raise HTTPException(422, "Incident type is required")
-    was_blocked = user.is_blocked
-    if not data.approved:
-        review.violation_reason = "CONTAMINATION"
-        apply_violation(db, review, session, review.violation_reason)
-        if not was_blocked and user.is_blocked:
-            audit(db, moderator, "user", user.id, "USER_AUTO_BLOCKED", {"review_id": review.id})
-    reward_review(db, session, data.approved)
-    audit(db, moderator, "review", review.id, "REVIEW_APPROVED" if data.approved else "REVIEW_REJECTED")
-    db.commit()
-    return {"status": review.status}
+    return decide_review(db, moderator, review_id, approved=data.approved,
+                         create_incident=data.create_incident, incident_kind=data.incident_kind,
+                         comment=data.comment, annotations=data.annotations)
 
 
 @router.post("/violations/{violation_id}/cancel")

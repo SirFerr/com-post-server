@@ -1,18 +1,20 @@
 import io
+import logging
 
 from fastapi import FastAPI, HTTPException
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ml_runtime.inference import heuristic_prediction, trained_prediction
 from ml_runtime.registry import registry
 from ml_runtime.storage import read_photo
+from app.config import get_settings
 
 app = FastAPI(title="ComPost contamination detector")
 
 
 class AnalyzeRequest(BaseModel):
-    photo_key: str
+    photo_key: str = Field(min_length=1, max_length=512)
 
 
 @app.get("/health")
@@ -28,7 +30,10 @@ def health():
 @app.post("/analyze")
 def analyze(request: AnalyzeRequest):
     try:
-        image = Image.open(io.BytesIO(read_photo(request.photo_key)))
-        return trained_prediction(image) or heuristic_prediction(image)
+        with Image.open(io.BytesIO(read_photo(request.photo_key))) as image:
+            if image.width * image.height > get_settings().max_image_pixels:
+                raise ValueError("Image resolution exceeds the allowed limit")
+            return trained_prediction(image) or heuristic_prediction(image)
     except Exception as exc:
-        raise HTTPException(422, f"Cannot analyze image: {exc}")
+        logging.getLogger(__name__).exception("Image analysis failed")
+        raise HTTPException(422, "Cannot analyze image") from exc

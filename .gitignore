@@ -1,6 +1,10 @@
 .env
 .env.production
 .venv/
+.venv*/
+.ruff_cache/
+.coverage
+dependency-audit*.json
 backups/
 __pycache__/
 .pytest_cache/

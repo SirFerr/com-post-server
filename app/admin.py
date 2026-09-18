@@ -3,13 +3,14 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .domain.scores import locked_score
 from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
 from .ml_dataset import freeze_dataset_version
-from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, UserScore, Violation
+from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ProximityChallenge, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, Violation
 from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, IncidentCreate, IncidentUpdate, MaintenanceCreate, MaintenanceModeRequest, PasswordConfirmation, ScoreAdjustment, TelemetryRequest, UserAdminUpdate
 from .security import require_roles, signed_command, verify_password
 from .services import audit, incident_title, photo_url, store_photo
@@ -207,6 +208,8 @@ def update_user(user_id: str, data: UserAdminUpdate, db: Session = Depends(get_d
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
+    if user.id == actor.id and data.is_blocked is True:
+        raise HTTPException(409, "Administrator cannot block their own account")
     previous_role = user.role
     previous_blocked = user.is_blocked
     if data.is_blocked is not None:
@@ -230,10 +233,7 @@ def adjust_score(user_id: str, data: ScoreAdjustment, db: Session = Depends(get_
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    score = db.get(UserScore, user_id)
-    if not score:
-        score = UserScore(user_id=user_id, points=0)
-        db.add(score)
+    score = locked_score(db, user_id)
     score.points += data.amount
     db.flush()
     db.add(ScoreTransaction(user_id=user_id, amount=data.amount, balance_after=score.points, reason=data.reason, actor_id=actor.id))
@@ -545,12 +545,18 @@ def delete_composter(composter_id: str, data: PasswordConfirmation, db: Session 
     session_ids = list(db.scalars(select(AccessSession.id).where(AccessSession.composter_id == composter.id)).all())
     review_ids = list(db.scalars(select(Review.id).where(Review.session_id.in_(session_ids))).all()) if session_ids else []
     if review_ids:
+        # Keep points history even when its source review is removed.
+        db.execute(update(ScoreTransaction).where(ScoreTransaction.review_id.in_(review_ids)).values(review_id=None))
         db.execute(delete(Violation).where(Violation.review_id.in_(review_ids)))
         db.execute(delete(Review).where(Review.id.in_(review_ids)))
     if session_ids:
         db.execute(delete(DeviceCommand).where(DeviceCommand.session_id.in_(session_ids)))
         db.execute(delete(AccessSession).where(AccessSession.id.in_(session_ids)))
     db.execute(delete(Telemetry).where(Telemetry.composter_id == composter.id))
+    db.execute(delete(ProximityChallenge).where(ProximityChallenge.composter_id == composter.id))
+    db.execute(delete(MaintenanceRecord).where(MaintenanceRecord.composter_id == composter.id))
+    # Incident history remains accessible without a live device reference.
+    db.execute(update(Incident).where(Incident.composter_id == composter.id).values(composter_id=None))
     db.delete(composter)
     audit(db, actor, "composter", composter_id, "COMPOSTER_DELETED")
     db.commit()

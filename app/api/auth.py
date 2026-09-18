@@ -7,11 +7,12 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AccessSession, AuditLog, AuthSession, DeviceCommand, Review, ReviewStatus, Role, ScoreTransaction, User, UserScore, Violation
+from ..models import AuditLog, AuthSession, Review, ReviewStatus, Role, ScoreTransaction, User, UserScore, Violation
 from ..schemas import ChangePasswordRequest, LoginRequest, PasswordConfirmation, RefreshRequest, RegisterRequest
 from ..security import create_auth_session, current_user, hash_password, rotate_refresh_token, verify_password
 from ..services import audit, photo_url
 from .dependencies import refresh_expired_ban
+from ..queries.deposits import user_deposits
 
 router = APIRouter()
 
@@ -123,10 +124,8 @@ def delete_account(data: PasswordConfirmation, db: Session = Depends(get_db), us
 
 @router.get("/profile/deposits")
 def deposit_history(db: Session = Depends(get_db), user: User = Depends(current_user)):
-    sessions = db.scalars(select(AccessSession).where(AccessSession.user_id == user.id).order_by(AccessSession.created_at.desc()).limit(100)).all()
     result = []
-    for session in sessions:
-        review = db.scalar(select(Review).where(Review.session_id == session.id))
+    for session, review in user_deposits(db, user.id):
         moderator_comment = None
         if review:
             moderator_comment = review.comment or (

@@ -1,4 +1,5 @@
 import re
+import math
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -43,8 +44,8 @@ class DeviceProof(BaseModel):
 
 
 class AccessRequest(BaseModel):
-    latitude: float
-    longitude: float
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
     challenge_id: str
     proof: DeviceProof
 
@@ -71,10 +72,12 @@ class ModerateRequest(BaseModel):
         for box in value:
             for key in ("x", "y", "width", "height"):
                 number = float(box.get(key, -1))
-                if number < 0 or number > 1:
+                if not math.isfinite(number) or number < 0 or number > 1:
                     raise ValueError("Annotation coordinates must be normalized from 0 to 1")
             if float(box["width"]) <= 0 or float(box["height"]) <= 0:
                 raise ValueError("Annotation dimensions must be positive")
+            if float(box["x"]) + float(box["width"]) > 1.000001 or float(box["y"]) + float(box["height"]) > 1.000001:
+                raise ValueError("Annotation extends beyond the image")
         return value
 
 
@@ -122,9 +125,9 @@ class MaintenanceModeRequest(BaseModel):
 class ComposterCreate(BaseModel):
     name: str
     device_id: str
-    latitude: float
-    longitude: float
-    radius_m: float = 100
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    radius_m: float = Field(default=100, gt=0, allow_inf_nan=False)
     secret: str | None = Field(default=None, min_length=32, max_length=128)
     is_available: bool = True
 
@@ -132,9 +135,9 @@ class ComposterCreate(BaseModel):
 class ComposterUpdate(BaseModel):
     current_password: str | None = Field(default=None, min_length=8, max_length=128)
     name: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
-    radius_m: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
+    longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
+    radius_m: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     is_available: bool | None = None
 
 

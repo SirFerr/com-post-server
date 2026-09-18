@@ -15,4 +15,11 @@ def s3_client():
 
 def read_photo(photo_key: str) -> bytes:
     settings = get_settings()
-    return s3_client().get_object(Bucket=settings.s3_bucket, Key=photo_key)["Body"].read()
+    body = s3_client().get_object(Bucket=settings.s3_bucket, Key=photo_key)["Body"]
+    try:
+        payload = body.read(settings.max_photo_bytes + 1)
+    finally:
+        body.close()
+    if len(payload) > settings.max_photo_bytes:
+        raise ValueError("Photo exceeds the allowed size")
+    return payload

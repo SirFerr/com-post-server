@@ -34,6 +34,8 @@ def validated_image(file: UploadFile) -> tuple[bytes, str]:
             if image.width * image.height > settings.max_image_pixels:
                 raise HTTPException(413, "Image resolution exceeds the allowed limit")
             image.verify()
+    except Image.DecompressionBombError:
+        raise HTTPException(413, "Image resolution exceeds the allowed limit")
     except (UnidentifiedImageError, OSError, ValueError):
         raise HTTPException(422, "Image is corrupted or unsupported")
     return payload, {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image_format]

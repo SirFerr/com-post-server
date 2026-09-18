@@ -2,7 +2,7 @@ import os
 
 from sqlalchemy import select
 
-from .database import Base, SessionLocal, engine
+from .database import SessionLocal
 from .models import Role, User
 from .security import hash_password
 

@@ -948,10 +948,7 @@ def test_incidents_maintenance_score_and_dataset_workflows(client, monkeypatch):
         def head_object(self, **_):
             return {"ContentLength": 4, "ContentType": "image/jpeg", "ETag": '"test-etag"', "Metadata": {}}
 
-        def generate_presigned_url(self, *_args, **_kwargs):
-            return "http://example.test/photo.jpg"
-
-    monkeypatch.setattr(web.boto3, "client", lambda *_args, **_kwargs: FakeS3())
+    monkeypatch.setattr(web, "storage_client", lambda: FakeS3())
     object_detail = client.get(f"/web/storage/object/{object_key}")
     assert object_detail.status_code == 200
     assert object_key in object_detail.text

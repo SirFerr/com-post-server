@@ -1,0 +1,6 @@
+- targets: [caddy:80]
+  labels: {component: caddy}
+- targets: [postgres:5432]
+  labels: {component: postgres}
+- targets: [telemetry-postgres:5432]
+  labels: {component: telemetry-postgres}

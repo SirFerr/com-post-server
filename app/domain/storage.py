@@ -1,22 +1,10 @@
 import io
-import re
-import uuid
 
-import boto3
 from fastapi import HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 
 from ..config import get_settings
-
-
-def _image_storage(endpoint_url: str):
-    settings = get_settings()
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-    )
+from .media_client import presigned_url, upload_image
 
 
 def validated_image(file: UploadFile) -> tuple[bytes, str]:
@@ -43,22 +31,8 @@ def validated_image(file: UploadFile) -> tuple[bytes, str]:
 
 def store_photo(file: UploadFile) -> str:
     payload, content_type = validated_image(file)
-    settings = get_settings()
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", file.filename or "photo.jpg").strip(".-") or "photo.jpg"
-    key = f"deposits/{uuid.uuid4()}-{safe_name[:120]}"
-    _image_storage(settings.s3_endpoint).upload_fileobj(
-        io.BytesIO(payload),
-        settings.s3_bucket,
-        key,
-        ExtraArgs={"ContentType": content_type},
-    )
-    return key
+    return upload_image(payload, content_type, file.filename or "photo.jpg")
 
 
 def photo_url(key: str) -> str:
-    settings = get_settings()
-    return _image_storage(settings.s3_public_endpoint).generate_presigned_url(
-        "get_object",
-        Params={"Bucket": settings.s3_bucket, "Key": key},
-        ExpiresIn=900,
-    )
+    return presigned_url(key)

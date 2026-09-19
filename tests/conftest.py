@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import admin, web
 from app.api import composters
+from app.domain import storage
 from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import Composter, Role, User
@@ -27,6 +28,7 @@ def database(monkeypatch):
 
     monkeypatch.setattr(admin, "store_photo", fake_store_photo)
     monkeypatch.setattr(composters, "store_photo", fake_store_photo)
+    monkeypatch.setattr(storage, "presigned_url", lambda key: f"http://example.test/{key}")
     monkeypatch.setattr(web, "firmware_rows", lambda: [])
     Base.metadata.create_all(engine)
     with SessionLocal() as db:

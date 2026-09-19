@@ -13,7 +13,13 @@
 	}
 	@internalMetrics path /metrics
 	respond @internalMetrics 404
-	reverse_proxy api:8000
+	@web path / /web /web/* /static/*
+	handle @web {
+		reverse_proxy web:8000
+	}
+	handle {
+		reverse_proxy api:8000
+	}
 }
 
 {$S3_DOMAIN} {

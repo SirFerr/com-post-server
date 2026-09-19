@@ -1,6 +1,4 @@
-import io
 import json
-import secrets
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -22,6 +20,7 @@ from .domain.reviews import decide_review
 from .config import get_settings
 from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
 from .domain.storage import validated_image
+from .domain.media_client import storage_client, upload_image
 from .ml_dataset import build_dataset_manifest, freeze_dataset_version, training_readiness
 from .models import AccessSession, AuditLog, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, MLDatasetPhotoArchive, MLDatasetSample, MLDatasetSampleArchive, ModelTrainingRun, Review, ReviewStatus, Role, ScoreTransaction, StorageObjectAnnotation, User, UserScore, Violation
 from .security import create_web_session, revoke_web_session, verify_password, web_current_user
@@ -473,7 +472,7 @@ def moderation_page(request: Request, db: Session = Depends(get_db), actor: User
 def storage_page(request: Request, q: str = Query(""), cursor: str | None = Query(None, max_length=1024), page: int = Query(1, ge=1), db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     require_role(actor, Role.ADMIN, Role.ENGINEER, Role.MODERATOR)
     settings = get_settings()
-    client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
+    client = storage_client()
     try:
         result = client.list_objects_v2(
             Bucket=settings.s3_bucket,
@@ -508,7 +507,7 @@ def storage_page(request: Request, q: str = Query(""), cursor: str | None = Quer
 def storage_object_detail(request: Request, object_key: str, db: Session = Depends(get_db), actor: User = Depends(web_current_user)):
     require_role(actor, Role.ADMIN, Role.ENGINEER, Role.MODERATOR)
     settings = get_settings()
-    client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
+    client = storage_client()
     try:
         head = client.head_object(Bucket=settings.s3_bucket, Key=object_key)
     except Exception as exc:
@@ -580,7 +579,7 @@ def update_storage_annotations(
     csrf(request, csrf_token)
     require_role(actor, Role.ADMIN, Role.ENGINEER, Role.MODERATOR)
     settings = get_settings()
-    client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
+    client = storage_client()
     try:
         client.head_object(Bucket=settings.s3_bucket, Key=object_key)
     except Exception as exc:
@@ -613,12 +612,8 @@ def storage_upload(request: Request, file: UploadFile = File(), csrf_token: str 
     require_role(actor, Role.ADMIN, Role.ENGINEER)
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(415, "Можно загружать только изображения")
-    settings = get_settings()
     payload, content_type = validated_image(file)
-    safe_name = (file.filename or "photo.jpg").replace("/", "_").replace("\\", "_")
-    key = f"engineering/{actor.id}/{secrets.token_hex(8)}-{safe_name}"
-    client = boto3.client("s3", endpoint_url=settings.s3_endpoint, aws_access_key_id=settings.s3_access_key, aws_secret_access_key=settings.s3_secret_key)
-    client.upload_fileobj(io.BytesIO(payload), settings.s3_bucket, key, ExtraArgs={"ContentType": content_type})
+    key = upload_image(payload, content_type, file.filename or "photo.jpg", namespace=f"engineering/{actor.id}")
     audit(db, actor, "storage", actor.id, "ENGINEERING_PHOTO_UPLOADED", {"key": key})
     db.commit()
     return RedirectResponse("/web/storage?q=engineering/", 303)

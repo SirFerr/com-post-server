@@ -10,7 +10,7 @@ from .database import get_db
 from .domain.scores import locked_score
 from .domain.incidents import audit_incident_resolved, set_full_state_from_incident, sync_full_state_after_incident_change
 from .ml_dataset import freeze_dataset_version
-from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, ProximityChallenge, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, Violation
+from .models import AccessSession, AuditLog, AuthSession, Composter, DatasetVersion, DeviceCommand, Incident, MaintenanceRecord, OutboxEvent, ProximityChallenge, Review, ReviewStatus, Role, ScoreTransaction, SessionStatus, Telemetry, User, Violation
 from .schemas import ComposterCreate, ComposterUpdate, DebugCommandRequest, FullStateRequest, IncidentCreate, IncidentUpdate, MaintenanceCreate, MaintenanceModeRequest, PasswordConfirmation, ScoreAdjustment, TelemetryRequest, UserAdminUpdate
 from .security import require_roles, signed_command, verify_password
 from .services import audit, incident_title, photo_url, store_photo
@@ -553,6 +553,7 @@ def delete_composter(composter_id: str, data: PasswordConfirmation, db: Session 
         db.execute(delete(DeviceCommand).where(DeviceCommand.session_id.in_(session_ids)))
         db.execute(delete(AccessSession).where(AccessSession.id.in_(session_ids)))
     db.execute(delete(Telemetry).where(Telemetry.composter_id == composter.id))
+    db.add(OutboxEvent(destination="telemetry", kind="composter.deleted", payload=json.dumps({"composter_id": composter.id})))
     db.execute(delete(ProximityChallenge).where(ProximityChallenge.composter_id == composter.id))
     db.execute(delete(MaintenanceRecord).where(MaintenanceRecord.composter_id == composter.id))
     # Incident history remains accessible without a live device reference.
@@ -592,7 +593,11 @@ def telemetry(composter_id: str, data: TelemetryRequest, db: Session = Depends(g
         raise HTTPException(404, "Composter not found")
     composter.battery_level, composter.fill_level, composter.lock_state = data.battery_level, data.fill_level, data.lock_state
     composter.last_seen_at = datetime.now(timezone.utc)
-    db.add(Telemetry(composter_id=composter.id, **data.model_dump()))
+    db.add(OutboxEvent(destination="telemetry", kind="telemetry.recorded", payload=json.dumps({
+        "composter_id": composter.id,
+        **data.model_dump(),
+        "reported_at": composter.last_seen_at.isoformat(),
+    })))
     audit(db, actor, "composter", composter.id, "TELEMETRY_RECORDED", data.model_dump())
     db.commit()
     return {"status": "recorded"}

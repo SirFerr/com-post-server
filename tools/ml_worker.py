@@ -15,6 +15,7 @@ from app.ml_dataset import require_private_training_manifest
 from app.models import DatasetVersion, ModelTrainingRun
 from tools.ml_pipeline import export_yolo, train_candidate
 from tools.taco_pretrain import ensure_taco_pretrained
+from tools.worker_heartbeat import start_heartbeat
 
 
 def storage():
@@ -102,6 +103,7 @@ def run_next() -> bool:
 
 
 def main() -> None:
+    start_heartbeat("ml-trainer")
     once = os.environ.get("ML_WORKER_ONCE", "").lower() in {"1", "true", "yes"}
     while True:
         handled = run_next()

@@ -1,28 +1,18 @@
 import json
 from pathlib import Path
 
-import boto3
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
+from ..domain.media_client import storage_client
 from ..models import Review, Role, StorageObjectAnnotation, User
 from ..security import require_roles
 from ..services import photo_url
 
 router = APIRouter(prefix="/admin/storage", tags=["storage"])
-
-
-def storage_client():
-    settings = get_settings()
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.s3_endpoint,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-    )
 
 
 def object_annotations(db: Session, object_key: str) -> list[dict]:

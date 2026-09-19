@@ -2,6 +2,7 @@ import io
 import logging
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -9,8 +10,15 @@ from ml_runtime.inference import heuristic_prediction, trained_prediction
 from ml_runtime.registry import registry
 from ml_runtime.storage import read_photo
 from app.config import get_settings
+from app.observability import ObservabilityMiddleware, metrics_text
 
 app = FastAPI(title="ComPost contamination detector")
+app.add_middleware(ObservabilityMiddleware)
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    return metrics_text()
 
 
 class AnalyzeRequest(BaseModel):

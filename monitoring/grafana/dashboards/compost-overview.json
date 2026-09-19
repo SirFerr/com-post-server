@@ -1,0 +1,115 @@
+{
+  "uid": "compost-overview",
+  "title": "ComPost services",
+  "tags": ["compost", "services"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Metrics endpoints (1 = reachable)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6},
+      "targets": [{"refId": "A", "expr": "up{job=\"compost-services\"}", "legendFormat": "{{service}}", "instant": true}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"orientation": "horizontal", "textMode": "value_and_name", "colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 2,
+      "title": "Dependency health (1 = reachable)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6},
+      "targets": [{"refId": "A", "expr": "probe_success{job=~\"health-http|health-tcp\"}", "legendFormat": "{{component}}", "instant": true}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"orientation": "horizontal", "textMode": "value_and_name", "colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 3,
+      "title": "Undelivered events",
+      "description": "A rising outbox can indicate that telemetry delivery is stalled.",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 0, "y": 6, "w": 6, "h": 6},
+      "targets": [{"refId": "A", "expr": "compost_outbox_pending{service=\"api\"}", "instant": true}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 100}, {"color": "red", "value": 1000}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 4,
+      "title": "Oldest queued training run",
+      "description": "Queue age can reveal stalled training even while the trainer heartbeat continues.",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 6, "y": 6, "w": 6, "h": 6},
+      "targets": [{"refId": "A", "expr": "compost_training_oldest_queued_seconds{service=\"api\"}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 600}, {"color": "red", "value": 1800}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 5,
+      "title": "Training runs by status",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 12, "y": 6, "w": 6, "h": 6},
+      "targets": [{"refId": "A", "expr": "compost_training_runs{service=\"api\"}", "legendFormat": "{{status}}", "instant": true}],
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"orientation": "horizontal", "textMode": "value_and_name", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 6,
+      "title": "Firing alert rules",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 18, "y": 6, "w": 6, "h": 6},
+      "targets": [{"refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)", "instant": true}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 10,
+      "title": "Worker heartbeat age",
+      "description": "Age of the last database heartbeat from ml-trainer and telemetry-worker. Zero timestamp before the first heartbeat appears as a very large age.",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 6},
+      "targets": [{"refId": "A", "expr": "time() - compost_worker_last_seen_timestamp_seconds{service=\"api\"}", "legendFormat": "{{name}}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 60}, {"color": "red", "value": 120}]}}, "overrides": []},
+      "options": {"orientation": "horizontal", "textMode": "value_and_name", "colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 7,
+      "title": "Requests per second",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8},
+      "targets": [{"refId": "A", "expr": "sum by (service) (rate(compost_http_requests_total{job=\"compost-services\",path!=\"/metrics\"}[5m]))", "legendFormat": "{{service}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 8,
+      "title": "HTTP 5xx per second",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 8},
+      "targets": [{"refId": "A", "expr": "sum by (service) (rate(compost_http_requests_total{job=\"compost-services\",path!=\"/metrics\",status=~\"5..\"}[5m]))", "legendFormat": "{{service}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 9,
+      "title": "Health probe duration",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "compost-prometheus"},
+      "gridPos": {"x": 0, "y": 26, "w": 24, "h": 8},
+      "targets": [{"refId": "A", "expr": "probe_duration_seconds{job=~\"health-http|health-tcp\"}", "legendFormat": "{{component}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    }
+  ]
+}

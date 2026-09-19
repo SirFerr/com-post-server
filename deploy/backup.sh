@@ -13,12 +13,14 @@ mkdir -p "$target"
 
 docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$target/postgres.dump"
+docker compose --env-file .env.production -f docker-compose.prod.yml exec -T telemetry-postgres \
+  pg_dump -U telemetry -d telemetry -Fc > "$target/telemetry-postgres.dump"
 docker run --rm -v compost_minio-data:/source:ro -v "$(cd "$target" && pwd):/backup" alpine:3.22 \
   tar -czf /backup/minio-data.tar.gz -C /source .
 docker run --rm -v compost_firmware-data:/source:ro -v "$(cd "$target" && pwd):/backup" alpine:3.22 \
   tar -czf /backup/firmware-data.tar.gz -C /source .
 
-(cd "$target" && sha256sum postgres.dump minio-data.tar.gz firmware-data.tar.gz > SHA256SUMS)
+(cd "$target" && sha256sum postgres.dump telemetry-postgres.dump minio-data.tar.gz firmware-data.tar.gz > SHA256SUMS)
 
 if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
   command -v age >/dev/null 2>&1 || { echo "age is required when BACKUP_AGE_RECIPIENT is set" >&2; exit 1; }

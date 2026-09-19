@@ -1,0 +1,32 @@
+groups:
+  - name: compost
+    rules:
+      - alert: CompostTargetDown
+        expr: up{job=~"compost-services|health-http|health-tcp|prometheus"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Monitoring target unavailable: {{ $labels.job }} {{ $labels.instance }}"
+      - alert: CompostHealthProbeFailed
+        expr: probe_success{job=~"health-http|health-tcp"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Health probe failed: {{ $labels.component }}"
+      - alert: CompostOutboxBacklog
+        expr: compost_outbox_pending{service="api"} > 100
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Integration outbox has more than 100 undelivered events"
+      - alert: CompostTrainingQueueStalled
+        expr: compost_training_oldest_queued_seconds{service="api"} > 600
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Oldest queued ML training run is over 10 minutes old"
+      - alert: CompostWorkerHeartbeatStale
+        expr: time() - compost_worker_last_seen_timestamp_seconds{service="api"} > 120
+        labels: {severity: critical}
+        annotations:
+          summary: "Worker heartbeat is over 2 minutes old: {{ $labels.name }}"

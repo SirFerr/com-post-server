@@ -1,0 +1,6 @@
+- targets: [gateway:8000]
+  labels: {component: gateway}
+- targets: [postgres:5432]
+  labels: {component: postgres}
+- targets: [telemetry-postgres:5432]
+  labels: {component: telemetry-postgres}

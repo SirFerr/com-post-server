@@ -1,5 +1,7 @@
 # Server review (2026-09-18)
 
+Update (2026-09-19): the staff web transport now runs in its own process behind the gateway. The transactional API and domain operations still share one database and deployment contract with it; the decision below remains applicable to further domain splits.
+
 ## Decision
 
 Keep one transactional API as a **modular monolith**. The inference service and

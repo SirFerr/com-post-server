@@ -11,6 +11,18 @@ services:
       timeout: 3s
       retries: 10
     volumes: [postgres-data:/var/lib/postgresql/data]
+  telemetry-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: telemetry
+      POSTGRES_USER: telemetry
+      POSTGRES_PASSWORD: telemetry-local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes: [telemetry-data:/var/lib/postgresql/data]
   minio:
     image: minio/minio:latest
     command: server /data --console-address :9001
@@ -50,22 +62,54 @@ services:
     entrypoint: ["/bin/sh", "-c", "mc alias set firmware http://firmware-storage:9100 firmwareadmin firmware-local-secret && mc mb --ignore-existing firmware/compost-firmware"]
   api:
     build: .
+    command: ["uvicorn", "app.api_service:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       DATABASE_URL: postgresql+psycopg://compost:compost-local@postgres:5432/compost
       JWT_SECRET: local-compose-secret-change-in-production
       S3_PUBLIC_ENDPOINT: http://192.168.1.212:9000
       ML_SERVICE_URL: http://ml-service:8001
-    ports: ["8000:8000"]
+      MEDIA_SERVICE_URL: http://media-service:8003
+      MEDIA_INTERNAL_TOKEN: local-media-token-change-me
+      TELEMETRY_SERVICE_URL: http://telemetry-service:8004
+      TELEMETRY_INTERNAL_TOKEN: local-telemetry-token-change-me
     depends_on:
       postgres: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
       firmware-storage-init: {condition: service_completed_successfully}
       ml-service: {condition: service_healthy}
+      media-service: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 3s
       retries: 10
+  web:
+    build: .
+    command: ["uvicorn", "app.web_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://compost:compost-local@postgres:5432/compost
+      JWT_SECRET: local-compose-secret-change-in-production
+      S3_PUBLIC_ENDPOINT: http://192.168.1.212:9000
+      ML_SERVICE_URL: http://ml-service:8001
+      MEDIA_SERVICE_URL: http://media-service:8003
+      MEDIA_INTERNAL_TOKEN: local-media-token-change-me
+      TELEMETRY_SERVICE_URL: http://telemetry-service:8004
+      TELEMETRY_INTERNAL_TOKEN: local-telemetry-token-change-me
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  gateway:
+    image: caddy:2
+    ports: ["8000:8000"]
+    volumes:
+      - ./deploy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
   ml-service:
     build:
       context: .
@@ -78,6 +122,47 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+  media-service:
+    build: .
+    command: ["uvicorn", "media_service:app", "--host", "0.0.0.0", "--port", "8003"]
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://192.168.1.212:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: compost-photos
+      MEDIA_INTERNAL_TOKEN: local-media-token-change-me
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  telemetry-service:
+    build: .
+    command: ["uvicorn", "telemetry_service:app", "--host", "0.0.0.0", "--port", "8004"]
+    environment:
+      TELEMETRY_DATABASE_URL: postgresql+psycopg://telemetry:telemetry-local@telemetry-postgres:5432/telemetry
+      TELEMETRY_INTERNAL_TOKEN: local-telemetry-token-change-me
+    depends_on:
+      telemetry-postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  telemetry-worker:
+    build: .
+    command: ["python", "-m", "tools.telemetry_worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://compost:compost-local@postgres:5432/compost
+      TELEMETRY_SERVICE_URL: http://telemetry-service:8004
+      TELEMETRY_INTERNAL_TOKEN: local-telemetry-token-change-me
+    depends_on:
+      api: {condition: service_healthy}
+      telemetry-service: {condition: service_healthy}
+    restart: unless-stopped
   ml-trainer:
     build:
       context: .
@@ -98,8 +183,44 @@ services:
       minio-init: {condition: service_completed_successfully}
     restart: unless-stopped
     volumes: [ml-cache:/root/.cache]
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.28.0
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    read_only: true
+    cap_drop: [ALL]
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./monitoring/targets-http.yml:/etc/prometheus/targets-http.yml:ro
+      - ./monitoring/targets-tcp.local.yml:/etc/prometheus/targets-tcp.yml:ro
+      - prometheus-data:/prometheus
+    depends_on: [blackbox-exporter]
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-compost-local}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
 volumes:
   postgres-data:
   minio-data:
   firmware-data:
   ml-cache:
+  telemetry-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,14 @@
+- targets: [http://api:8000/health/ready]
+  labels: {component: api}
+- targets: [http://web:8000/health/ready]
+  labels: {component: web}
+- targets: [http://ml-service:8001/health]
+  labels: {component: ml-service}
+- targets: [http://media-service:8003/health/ready]
+  labels: {component: media-service}
+- targets: [http://telemetry-service:8004/health]
+  labels: {component: telemetry-service}
+- targets: [http://minio:9000/minio/health/live]
+  labels: {component: minio}
+- targets: [http://firmware-storage:9100/minio/health/live]
+  labels: {component: firmware-storage}

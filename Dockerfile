@@ -7,6 +7,9 @@ RUN useradd --create-home --uid 10001 compost
 COPY app app
 COPY ml_runtime ml_runtime
 COPY ml_service.py .
+COPY media_service.py .
+COPY telemetry_service.py .
+COPY tools tools
 COPY alembic.ini .
 COPY alembic alembic
 RUN chown -R compost:compost /app

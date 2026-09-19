@@ -1,5 +1,9 @@
 # Community Compost backend
 
+Локальный шлюз слушает `http://localhost:8000`: JSON API и Swagger (`/docs`) идут в `api`, панель (`/web`) и её статика (`/static`) — в `web`. ML-инференс и обучение запускаются отдельными сервисами. Границы и общие зависимости описаны в [docs/architecture.md](docs/architecture.md).
+
+При обновлении существующей базы после запуска новых сервисов выполните `docker compose exec api python -m tools.backfill_telemetry`: команда идемпотентно ставит старые записи телеметрии в очередь доставки. Для production используйте `docker compose --env-file .env.production -f docker-compose.prod.yml exec api python -m tools.backfill_telemetry`.
+
 Архитектурные границы и правила модулей: [docs/architecture.md](docs/architecture.md).
 Результаты проверки сервера и решение по микросервисам: [docs/server-review.md](docs/server-review.md).
 

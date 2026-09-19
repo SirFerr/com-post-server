@@ -25,15 +25,19 @@ async def lifespan(_: FastAPI):
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(*, role: str = "combined") -> FastAPI:
+    if role not in {"combined", "api", "web"}:
+        raise ValueError(f"Unknown application role: {role}")
     application = FastAPI(title="Community Compost API", version="0.1.0", lifespan=lifespan)
     application.add_middleware(RateLimitMiddleware)
     application.add_middleware(ObservabilityMiddleware)
     application.include_router(health_router)
-    application.include_router(api_router)
-    application.include_router(admin_router)
-    application.include_router(web_router)
-    application.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+    if role in {"combined", "api"}:
+        application.include_router(api_router)
+        application.include_router(admin_router)
+    if role in {"combined", "web"}:
+        application.include_router(web_router)
+        application.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
     @application.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -44,9 +48,10 @@ def create_app() -> FastAPI:
             return response
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
-    @application.get("/", include_in_schema=False)
-    def web_root():
-        return RedirectResponse("/web", status_code=307)
+    if role in {"combined", "web"}:
+        @application.get("/", include_in_schema=False)
+        def web_root():
+            return RedirectResponse("/web", status_code=307)
 
     return application
 
